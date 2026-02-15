@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Instagram PiP Fullscreen",
+  "version": "1.0",
+  "description": "Add Picture-in-Picture button for Instagram videos with fullscreen mode.",
+  "permissions": ["activeTab", "scripting"],
+  "action": {
+    "default_title": "PiP Mode",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://www.instagram.com/*"],
+      "js": ["content.js"]
+    }
+  ],
+  "icons": {
+    "128": "icon.png"
+  }
+}
