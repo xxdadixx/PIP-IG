@@ -31,7 +31,7 @@
                 const mid = rect.top + rect.height / 2;
                 const dist = Math.abs(mid - centerY);
 
-                if (dist < focusZoneThreshold && dist < bestDistance) {
+                if (dist < focusZoneThreshold && dist <= bestDistance) {
                     best = v;
                     bestDistance = dist;
                 }
@@ -87,7 +87,6 @@
         }
 
         try {
-            // กรณี 1: สลับวิดีโอ (Switch)
             if (pipWindow) {
                 restoreVideoToPage(); 
 
@@ -109,11 +108,10 @@
                 pipWindow.document.body.appendChild(newVideo);
                 
                 newVideo.volume = CONFIG.defaultVolume; 
-                newVideo.play();
+                newVideo.play().catch(()=>{});
                 return;
             }
 
-            // กรณี 2: เปิดหน้าต่างใหม่ (New Window)
             currentVideo = newVideo;
             originalParent = newVideo.parentElement;
             originalSibling = newVideo.nextSibling;
@@ -128,7 +126,6 @@
             
             originalParent.insertBefore(placeholder, newVideo);
 
-            // requestWindow ตั้งขนาดมาให้แล้ว ไม่ต้อง resizeTo อีก
             pipWindow = await window.documentPictureInPicture.requestWindow({
                 width: CONFIG.targetWidth,
                 height: CONFIG.targetHeight,
@@ -139,13 +136,11 @@
             
             Object.assign(pipWindow.document.body.style, { margin: "0", background: "black" });
 
-            // ใช้ Try-Catch ครอบการย้ายจอ เพื่อไม่ให้ Error หยุดการทำงานของโปรแกรม
             setTimeout(() => {
                 try {
                     pipWindow.moveTo(CONFIG.secondScreenOffsetX, 0);
-                    // ลบ resizeTo ออก เพื่อแก้ Error
                 } catch (e) {
-                    console.warn("Auto-move failed (browser restriction):", e);
+                    console.warn("Auto-move failed:", e);
                 }
             }, 100);
 
@@ -155,7 +150,7 @@
             });
 
             newVideo.volume = CONFIG.defaultVolume;
-            newVideo.play();
+            newVideo.play().catch(()=>{});
 
         } catch (err) {
             console.error("PiP Error:", err);
@@ -163,12 +158,22 @@
         }
     }
 
+    function checkAndSwitchVideo() {
+        if (!pipWindow) return;
+        const newActive = getActiveVideo();
+        if (newActive && newActive !== currentVideo) {
+            openOrUpdatePiP(newActive);
+        }
+    }
+
     function addPiPButton() {
         const videos = document.querySelectorAll("video");
         videos.forEach(video => {
-            const parent = video.parentElement;
-            if (parent.querySelector(".my-pip-btn") || video === currentVideo) return;
+            if (video.dataset.pipReady) return;
+            video.dataset.pipReady = "true";
 
+            const parent = video.parentElement;
+            
             const btn = document.createElement("button");
             btn.className = "my-pip-btn";
             btn.innerText = "PiP 🚀";
@@ -188,6 +193,19 @@
                 parent.style.position = 'relative';
             }
             parent.appendChild(btn);
+
+            // 🎯 ตัวนี้จะคอยจัดการให้ตอนคุณเปิด Modal หรือคลิก Next ใน Carousel วิดีโอสลับมาที่ PiP อัตโนมัติอยู่แล้ว
+            video.addEventListener('playing', () => {
+                if (!pipWindow || currentVideo === video) return;
+                
+                setTimeout(() => {
+                    const rect = video.getBoundingClientRect();
+                    const isVisible = rect.top < window.innerHeight && rect.bottom > 0 && rect.height > 100;
+                    if (!video.paused && isVisible) {
+                        openOrUpdatePiP(video);
+                    }
+                }, 300);
+            });
         });
     }
 
@@ -200,15 +218,11 @@
 
         window.addEventListener("scroll", () => {
             if (!pipWindow) return;
-
             clearTimeout(scrollTimeout);
-            scrollTimeout = setTimeout(() => {
-                const newActive = getActiveVideo();
-                if (newActive && newActive !== currentVideo) {
-                    openOrUpdatePiP(newActive);
-                }
-            }, 400); 
+            scrollTimeout = setTimeout(checkAndSwitchVideo, 400); 
         });
+
+        // ❌ เอา window.addEventListener("click") ตัวปัญหาออกไปแล้ว
     }
 
     setInterval(addPiPButton, 1500);
