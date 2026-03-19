@@ -1,18 +1,18 @@
 (function () {
-    let pipWindow = null;
+    let popupWindow = null;
     let currentVideo = null;
     let originalParent = null;
     let originalSibling = null;
     let placeholder = null;
 
     // ==========================================
-    // ⚙️ ตั้งค่า
+    // ⚙️ ตั้งค่า (ใส่ขนาดจอของคุณได้เต็มที่เลย)
     // ==========================================
     const CONFIG = {
         secondScreenOffsetX: 1920, // พิกัดจอที่ 2
-        targetWidth: 1080,
-        targetHeight: 1920,
-        defaultVolume: 0.15 // 🔊 ระดับเสียงเริ่มต้น 15%
+        targetWidth: 1080,         // ความกว้างที่ต้องการ
+        targetHeight: 1920,        // ความสูงที่ต้องการ
+        defaultVolume: 0.15        // ระดับเสียง 15%
     };
 
     function getActiveVideo() {
@@ -26,11 +26,9 @@
 
         videos.forEach(v => {
             const rect = v.getBoundingClientRect();
-            
             if (rect.height > 100 && v !== currentVideo && rect.top < viewportHeight && rect.bottom > 0) {
                 const mid = rect.top + rect.height / 2;
                 const dist = Math.abs(mid - centerY);
-
                 if (dist < focusZoneThreshold && dist <= bestDistance) {
                     best = v;
                     bestDistance = dist;
@@ -46,7 +44,6 @@
         video.style.objectFit = "contain";
         video.style.background = "black";
         video.controls = true;
-        
         video.muted = false;
         video.volume = CONFIG.defaultVolume;
     }
@@ -77,17 +74,13 @@
         placeholder = null;
     }
 
-    async function openOrUpdatePiP(newVideo) {
+    async function openOrUpdatePopup(newVideo) {
         if (!newVideo) return;
         if (newVideo === currentVideo) return;
 
-        if (!('documentPictureInPicture' in window)) {
-            alert("Chrome ของคุณไม่รองรับ Document PiP");
-            return;
-        }
-
         try {
-            if (pipWindow) {
+            // กรณี 1: มีหน้าต่าง Popup เปิดอยู่แล้ว -> สลับวิดีโอ (Switch)
+            if (popupWindow && !popupWindow.closed) {
                 restoreVideoToPage(); 
 
                 currentVideo = newVideo;
@@ -100,18 +93,19 @@
                     display: "flex", alignItems: "center", justifyContent: "center",
                     color: "#888", fontSize: "14px"
                 });
-                placeholder.innerText = "Playing in PiP 🚀";
+                placeholder.innerText = "Playing in Popup 🚀";
 
                 originalParent.insertBefore(placeholder, newVideo);
 
                 setupVideoStyle(newVideo);
-                pipWindow.document.body.appendChild(newVideo);
+                popupWindow.document.body.appendChild(newVideo);
                 
                 newVideo.volume = CONFIG.defaultVolume; 
                 newVideo.play().catch(()=>{});
                 return;
             }
 
+            // กรณี 2: เปิดหน้าต่าง Popup ใหม่
             currentVideo = newVideo;
             originalParent = newVideo.parentElement;
             originalSibling = newVideo.nextSibling;
@@ -119,50 +113,81 @@
             placeholder = document.createElement("div");
             Object.assign(placeholder.style, {
                 width: "100%", height: "100%", backgroundColor: "black",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                color: "#ccc"
+                display: "flex", alignItems: "center", justifyContent: "center", color: "#ccc"
             });
-            placeholder.innerText = "PiP Mode Active 🚀";
-            
+            placeholder.innerText = "Popup Mode Active 🚀";
             originalParent.insertBefore(placeholder, newVideo);
 
-            pipWindow = await window.documentPictureInPicture.requestWindow({
-                width: CONFIG.targetWidth,
-                height: CONFIG.targetHeight,
+            // 🎯 ใช้ window.open สร้างหน้าต่างใหม่ที่สามารถกำหนดขนาดและพิกัดได้
+            const features = `width=${CONFIG.targetWidth},height=${CONFIG.targetHeight},left=${CONFIG.secondScreenOffsetX},top=0,menubar=no,toolbar=no,location=no,status=no`;
+            popupWindow = window.open("", "IG_Popup_Video", features);
+
+            // ดักจับกรณีผู้ใช้ยังไม่ได้อนุญาต Popup
+            if (!popupWindow) {
+                alert("⚠️ เบราว์เซอร์บล็อก Popup! กรุณากดปุ่ม 'อนุญาตป๊อปอัป (Allow pop-ups)' ที่ช่อง URL มุมขวาบนครับ");
+                restoreVideoToPage();
+                return;
+            }
+
+            // 🎯 เขียนโครงสร้าง HTML และปุ่ม Fullscreen ลงในหน้าต่าง Popup
+            popupWindow.document.write(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>IG Video - Popup</title>
+                    <style>
+                        body { margin: 0; background: black; display: flex; justify-content: center; align-items: center; width: 100vw; height: 100vh; overflow: hidden; }
+                        video { width: 100%; height: 100%; object-fit: contain; outline: none; }
+                        #fsBtn { position: absolute; top: 20px; right: 20px; z-index: 9999; padding: 12px 20px; background: rgba(255,0,50,0.9); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: 0.2s; }
+                        #fsBtn:hover { background: red; transform: scale(1.05); }
+                    </style>
+                </head>
+                <body>
+                    <button id="fsBtn">🔲 ขยายเต็มจอไร้ขอบ (Fullscreen)</button>
+                </body>
+                </html>
+            `);
+            popupWindow.document.close();
+
+            // ย้ายวิดีโอเข้าไป
+            setupVideoStyle(newVideo);
+            popupWindow.document.body.appendChild(newVideo);
+
+            // 🎯 ระบบจัดการปุ่ม Fullscreen (กดแล้วจะซ่อนปุ่มให้ดูเนียนตา)
+            const fsBtn = popupWindow.document.getElementById('fsBtn');
+            fsBtn.addEventListener('click', () => {
+                popupWindow.document.documentElement.requestFullscreen().then(() => {
+                    fsBtn.style.display = 'none'; 
+                }).catch(err => console.warn("Fullscreen failed:", err));
             });
 
-            setupVideoStyle(newVideo);
-            pipWindow.document.body.append(newVideo);
-            
-            Object.assign(pipWindow.document.body.style, { margin: "0", background: "black" });
-
-            setTimeout(() => {
-                try {
-                    pipWindow.moveTo(CONFIG.secondScreenOffsetX, 0);
-                } catch (e) {
-                    console.warn("Auto-move failed:", e);
+            // ถ้าผู้ใช้กด ESC ออกจากเต็มจอ ให้โชว์ปุ่มกลับมา
+            popupWindow.document.addEventListener('fullscreenchange', () => {
+                if (!popupWindow.document.fullscreenElement) {
+                    fsBtn.style.display = 'block';
                 }
-            }, 100);
+            });
 
-            pipWindow.addEventListener("pagehide", () => {
+            // ถ้าผู้ใช้กด (X) ปิดหน้าต่าง Popup
+            popupWindow.addEventListener("beforeunload", () => {
                 restoreVideoToPage();
-                pipWindow = null;
+                popupWindow = null;
             });
 
             newVideo.volume = CONFIG.defaultVolume;
             newVideo.play().catch(()=>{});
 
         } catch (err) {
-            console.error("PiP Error:", err);
+            console.error("Popup Error:", err);
             restoreVideoToPage();
         }
     }
 
     function checkAndSwitchVideo() {
-        if (!pipWindow) return;
+        if (!popupWindow || popupWindow.closed) return;
         const newActive = getActiveVideo();
         if (newActive && newActive !== currentVideo) {
-            openOrUpdatePiP(newActive);
+            openOrUpdatePopup(newActive);
         }
     }
 
@@ -176,7 +201,7 @@
             
             const btn = document.createElement("button");
             btn.className = "my-pip-btn";
-            btn.innerText = "PiP 🚀";
+            btn.innerText = "Popup 🚀"; // เปลี่ยนชื่อปุ่ม
             Object.assign(btn.style, {
                 position: "absolute", top: "10px", right: "10px", zIndex: "9999",
                 padding: "6px 10px", background: "rgba(0,0,0,0.6)", color: "white",
@@ -186,7 +211,7 @@
             btn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                openOrUpdatePiP(video);
+                openOrUpdatePopup(video);
             };
 
             if (window.getComputedStyle(parent).position === 'static') {
@@ -194,15 +219,30 @@
             }
             parent.appendChild(btn);
 
-            // 🎯 ตัวนี้จะคอยจัดการให้ตอนคุณเปิด Modal หรือคลิก Next ใน Carousel วิดีโอสลับมาที่ PiP อัตโนมัติอยู่แล้ว
+            // ระบบแก้เสียงหายตอนวนลูป ยังอยู่ครบ
+            let lastTime = 0;
+            video.addEventListener('timeupdate', () => {
+                if (popupWindow && currentVideo === video && !popupWindow.closed) {
+                    if (video.currentTime < lastTime - 0.5) {
+                        video.muted = false; 
+                        if (video.volume === 0) video.volume = CONFIG.defaultVolume;
+                    }
+                    lastTime = video.currentTime;
+                }
+            });
+
             video.addEventListener('playing', () => {
-                if (!pipWindow || currentVideo === video) return;
+                if (popupWindow && currentVideo === video && !popupWindow.closed) {
+                    video.muted = false;
+                    return;
+                }
+                if (!popupWindow || popupWindow.closed || currentVideo === video) return;
                 
                 setTimeout(() => {
                     const rect = video.getBoundingClientRect();
                     const isVisible = rect.top < window.innerHeight && rect.bottom > 0 && rect.height > 100;
                     if (!video.paused && isVisible) {
-                        openOrUpdatePiP(video);
+                        openOrUpdatePopup(video);
                     }
                 }, 300);
             });
@@ -217,12 +257,10 @@
         observer.observe(document.body, { childList: true, subtree: true });
 
         window.addEventListener("scroll", () => {
-            if (!pipWindow) return;
+            if (!popupWindow || popupWindow.closed) return;
             clearTimeout(scrollTimeout);
             scrollTimeout = setTimeout(checkAndSwitchVideo, 400); 
         });
-
-        // ❌ เอา window.addEventListener("click") ตัวปัญหาออกไปแล้ว
     }
 
     setInterval(addPiPButton, 1500);
