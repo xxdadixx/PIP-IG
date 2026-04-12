@@ -6,12 +6,12 @@
     let placeholder = null;
 
     // ==========================================
-    // ⚙️ ตั้งค่า (ใส่ขนาดจอของคุณได้เต็มที่เลย)
+    // ⚙️ ตั้งค่า
     // ==========================================
     const CONFIG = {
         secondScreenOffsetX: 1920, // พิกัดจอที่ 2
-        targetWidth: 1080,         // ความกว้างที่ต้องการ
-        targetHeight: 1920,        // ความสูงที่ต้องการ
+        targetWidth: 1080,         
+        targetHeight: 1920,        
         defaultVolume: 0.15        // ระดับเสียง 15%
     };
 
@@ -74,12 +74,41 @@
         placeholder = null;
     }
 
+    // 🎯 อัปเกรด: ฟังก์ชันเลื่อนหน้าจอแบบแยกประเภท (Feed vs Reels)
+    function scrollToNextVideo() {
+        console.log("🎬 Auto-scrolling to next post...");
+        
+        // กรณีที่ 1: ถ้าดูอยู่ในหน้า Reels
+        if (window.location.href.includes('/reels/')) {
+            // จำลองการกดปุ่มลูกศรลง (ArrowDown) 
+            const arrowEvent = new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, bubbles: true });
+            document.body.dispatchEvent(arrowEvent);
+            window.dispatchEvent(arrowEvent);
+        } 
+        // กรณีที่ 2: ถ้าดูอยู่ในหน้า Feed ปกติ
+        else {
+            const articles = [...document.querySelectorAll('article')];
+            if (currentVideo) {
+                const currentArticle = currentVideo.closest('article');
+                if (currentArticle) {
+                    const currentIndex = articles.indexOf(currentArticle);
+                    if (currentIndex !== -1 && currentIndex + 1 < articles.length) {
+                        // เลื่อนไปหากรอบโพสต์ตัวถัดไป
+                        articles[currentIndex + 1].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        return;
+                    }
+                }
+            }
+            // Fallback: ถ้าหาอะไรไม่เจอ ให้เลื่อนหน้าจอลงไป 80% ของความสูงจอ
+            window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
+        }
+    }
+
     async function openOrUpdatePopup(newVideo) {
         if (!newVideo) return;
         if (newVideo === currentVideo) return;
 
         try {
-            // กรณี 1: มีหน้าต่าง Popup เปิดอยู่แล้ว -> สลับวิดีโอ (Switch)
             if (popupWindow && !popupWindow.closed) {
                 restoreVideoToPage(); 
 
@@ -105,7 +134,6 @@
                 return;
             }
 
-            // กรณี 2: เปิดหน้าต่าง Popup ใหม่
             currentVideo = newVideo;
             originalParent = newVideo.parentElement;
             originalSibling = newVideo.nextSibling;
@@ -118,18 +146,15 @@
             placeholder.innerText = "Popup Mode Active 🚀";
             originalParent.insertBefore(placeholder, newVideo);
 
-            // 🎯 ใช้ window.open สร้างหน้าต่างใหม่ที่สามารถกำหนดขนาดและพิกัดได้
             const features = `width=${CONFIG.targetWidth},height=${CONFIG.targetHeight},left=${CONFIG.secondScreenOffsetX},top=0,menubar=no,toolbar=no,location=no,status=no`;
             popupWindow = window.open("", "IG_Popup_Video", features);
 
-            // ดักจับกรณีผู้ใช้ยังไม่ได้อนุญาต Popup
             if (!popupWindow) {
                 alert("⚠️ เบราว์เซอร์บล็อก Popup! กรุณากดปุ่ม 'อนุญาตป๊อปอัป (Allow pop-ups)' ที่ช่อง URL มุมขวาบนครับ");
                 restoreVideoToPage();
                 return;
             }
 
-            // 🎯 เขียนโครงสร้าง HTML และปุ่ม Fullscreen ลงในหน้าต่าง Popup
             popupWindow.document.write(`
                 <!DOCTYPE html>
                 <html>
@@ -149,11 +174,9 @@
             `);
             popupWindow.document.close();
 
-            // ย้ายวิดีโอเข้าไป
             setupVideoStyle(newVideo);
             popupWindow.document.body.appendChild(newVideo);
 
-            // 🎯 ระบบจัดการปุ่ม Fullscreen (กดแล้วจะซ่อนปุ่มให้ดูเนียนตา)
             const fsBtn = popupWindow.document.getElementById('fsBtn');
             fsBtn.addEventListener('click', () => {
                 popupWindow.document.documentElement.requestFullscreen().then(() => {
@@ -161,14 +184,12 @@
                 }).catch(err => console.warn("Fullscreen failed:", err));
             });
 
-            // ถ้าผู้ใช้กด ESC ออกจากเต็มจอ ให้โชว์ปุ่มกลับมา
             popupWindow.document.addEventListener('fullscreenchange', () => {
                 if (!popupWindow.document.fullscreenElement) {
                     fsBtn.style.display = 'block';
                 }
             });
 
-            // ถ้าผู้ใช้กด (X) ปิดหน้าต่าง Popup
             popupWindow.addEventListener("beforeunload", () => {
                 restoreVideoToPage();
                 popupWindow = null;
@@ -201,7 +222,7 @@
             
             const btn = document.createElement("button");
             btn.className = "my-pip-btn";
-            btn.innerText = "Popup 🚀"; // เปลี่ยนชื่อปุ่ม
+            btn.innerText = "Popup 🚀";
             Object.assign(btn.style, {
                 position: "absolute", top: "10px", right: "10px", zIndex: "9999",
                 padding: "6px 10px", background: "rgba(0,0,0,0.6)", color: "white",
@@ -219,15 +240,43 @@
             }
             parent.appendChild(btn);
 
-            // ระบบแก้เสียงหายตอนวนลูป ยังอยู่ครบ
+            // 🎯 อัปเกรด: ระบบตรวจจับตอนคลิปจบที่แม่นยำขึ้น
             let lastTime = 0;
+            let hasScrolled = false; 
+
             video.addEventListener('timeupdate', () => {
                 if (popupWindow && currentVideo === video && !popupWindow.closed) {
-                    if (video.currentTime < lastTime - 0.5) {
+                    
+                    // เงื่อนไข 1: เวลาวิดีโอตกลงฮวบ (แปลว่าวนลูป)
+                    const isLooping = video.currentTime < lastTime - 0.5;
+                    // เงื่อนไข 2: วิดีโอเล่นมาถึง 0.3 วินาทีสุดท้ายก่อนจะจบ
+                    const isNearEnd = video.duration > 0 && (video.currentTime >= video.duration - 0.3);
+
+                    if (isLooping || isNearEnd) {
+                        if (!hasScrolled) {
+                            hasScrolled = true;
+                            scrollToNextVideo(); // สั่งเลื่อน!
+                            
+                            // ล็อคไม่ให้เลื่อนรัวๆ เป็นเวลา 2.5 วินาที รอโพสต์ใหม่มา
+                            setTimeout(() => {
+                                hasScrolled = false;
+                            }, 2500);
+                        }
+                    } else {
+                        // บังคับเปิดเสียงเรื่อยๆ
                         video.muted = false; 
                         if (video.volume === 0) video.volume = CONFIG.defaultVolume;
                     }
                     lastTime = video.currentTime;
+                }
+            });
+
+            // Fallback เผื่อ IG ปล่อย Event จบออกมาจริงๆ
+            video.addEventListener('ended', () => {
+                if (popupWindow && currentVideo === video && !popupWindow.closed && !hasScrolled) {
+                    hasScrolled = true;
+                    scrollToNextVideo();
+                    setTimeout(() => hasScrolled = false, 2500);
                 }
             });
 
