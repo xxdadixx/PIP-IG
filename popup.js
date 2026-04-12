@@ -32,3 +32,17 @@ function enablePiP() {
     video.requestPictureInPicture();
   }
 }
+
+document.addEventListener('DOMContentLoaded', () => {
+  const toggle = document.getElementById('toggleSwitch');
+
+  // โหลดสถานะเดิมมาแสดง (ค่าเริ่มต้นคือ เปิด)
+  chrome.storage.local.get(['isEnabled'], (res) => {
+      toggle.checked = res.isEnabled !== false; 
+  });
+
+  // เมื่อกดเปลี่ยนสวิตช์ ให้บันทึกค่า
+  toggle.addEventListener('change', (e) => {
+      chrome.storage.local.set({ isEnabled: e.target.checked });
+  });
+});
