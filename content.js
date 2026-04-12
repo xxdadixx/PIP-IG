@@ -1,4 +1,7 @@
 (function () {
+    let isEnabled = true; 
+    let isAutoScrollEnabled = true;
+
     let popupWindow = null;
     let currentVideo = null;
     let originalParent = null;
@@ -6,10 +9,37 @@
     let placeholder = null;
 
     // ==========================================
-    // ⚙️ ตั้งค่า (พิกัดข้ามจอ Ultrawide ไปลงจอตั้ง)
+    // ⚙️ รับคำสั่งจากสวิตช์ Toggle
+    // ==========================================
+    chrome.storage.local.get(['isEnabled', 'isAutoScrollEnabled'], (res) => {
+        isEnabled = res.isEnabled !== false;
+        isAutoScrollEnabled = res.isAutoScrollEnabled !== false;
+    });
+
+    chrome.storage.onChanged.addListener((changes) => {
+        if (changes.isEnabled) {
+            isEnabled = changes.isEnabled.newValue;
+            if (!isEnabled) {
+                document.querySelectorAll(".my-pip-btn").forEach(btn => btn.remove());
+                document.querySelectorAll("video").forEach(v => delete v.dataset.pipReady);
+                if (popupWindow && !popupWindow.closed) {
+                    restoreVideoToPage();
+                    popupWindow.close();
+                }
+            } else {
+                addPiPButton(); 
+            }
+        }
+        if (changes.isAutoScrollEnabled) {
+            isAutoScrollEnabled = changes.isAutoScrollEnabled.newValue;
+        }
+    });
+
+    // ==========================================
+    // ⚙️ ตั้งค่าพิกัดข้ามจอ
     // ==========================================
     const CONFIG = {
-        secondScreenOffsetX: 3540, // 🎯 กระโดดข้ามจอ 3440 ไป
+        secondScreenOffsetX: 3540, 
         targetWidth: 1080,         
         targetHeight: 1920,        
         defaultVolume: 0.15        
@@ -22,7 +52,7 @@
         
         let best = null;
         let bestDistance = Infinity;
-        const focusZoneThreshold = viewportHeight * 0.3; 
+        const focusZoneThreshold = viewportHeight * 0.4; 
 
         videos.forEach(v => {
             const rect = v.getBoundingClientRect();
@@ -44,8 +74,6 @@
         video.style.objectFit = "contain";
         video.style.background = "black";
         video.controls = true;
-        video.muted = false;
-        video.volume = CONFIG.defaultVolume;
     }
 
     function resetVideoStyle(video) {
@@ -75,32 +103,42 @@
     }
 
     function scrollToNextVideo() {
-        console.log("🎬 Auto-scrolling to next post...");
+        if (!isEnabled || !isAutoScrollEnabled) return;
         
-        if (window.location.href.includes('/reels/')) {
-            const arrowEvent = new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, bubbles: true });
-            document.body.dispatchEvent(arrowEvent);
-            window.dispatchEvent(arrowEvent);
-        } 
-        else {
-            const articles = [...document.querySelectorAll('article')];
-            if (currentVideo) {
-                const currentArticle = currentVideo.closest('article');
-                if (currentArticle) {
-                    const currentIndex = articles.indexOf(currentArticle);
-                    if (currentIndex !== -1 && currentIndex + 1 < articles.length) {
-                        articles[currentIndex + 1].scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        return;
-                    }
-                }
-            }
+        const videos = [...document.querySelectorAll("video")];
+        const currentIdx = videos.indexOf(currentVideo);
+
+        if (currentIdx !== -1 && currentIdx + 1 < videos.length) {
+            const nextVideo = videos[currentIdx + 1];
+            nextVideo.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
             window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
+            
+            const nextBtnSvg = document.querySelector('svg[aria-label="Next"], svg[aria-label="ถัดไป"]');
+            if (nextBtnSvg) {
+                const btn = nextBtnSvg.closest('button') || nextBtnSvg.closest('a');
+                if (btn) btn.click();
+            }
+        }
+    }
+
+    // 🎯 NEW: ฟังก์ชันเล่นวิดีโอแบบป้องกัน Chrome สั่ง Pause
+    function safePlay(vid) {
+        if (!vid) return;
+        vid.muted = false;
+        vid.volume = CONFIG.defaultVolume;
+        let p = vid.play();
+        if (p !== undefined) {
+            p.catch(() => {
+                // ถ้า Chrome บล็อกเสียง ให้ยอมปิดเสียง แล้วบังคับเล่นภาพต่อ (Auto-next จะได้ไม่พัง)
+                vid.muted = true;
+                vid.play().catch(()=>{});
+            });
         }
     }
 
     async function openOrUpdatePopup(newVideo) {
-        if (!newVideo) return;
-        if (newVideo === currentVideo) return;
+        if (!isEnabled || !newVideo || newVideo === currentVideo) return;
 
         try {
             if (popupWindow && !popupWindow.closed) {
@@ -114,17 +152,16 @@
                 Object.assign(placeholder.style, {
                     width: "100%", height: "100%", backgroundColor: "black",
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    color: "#888", fontSize: "14px"
+                    color: "#888", fontSize: "14px", fontFamily: "-apple-system, sans-serif"
                 });
-                placeholder.innerText = "Playing in Popup 🚀";
+                placeholder.innerText = "Playing in Popup ";
 
                 originalParent.insertBefore(placeholder, newVideo);
 
                 setupVideoStyle(newVideo);
                 popupWindow.document.body.appendChild(newVideo);
                 
-                newVideo.volume = CONFIG.defaultVolume; 
-                newVideo.play().catch(()=>{});
+                safePlay(newVideo); // ใช้ท่าเล่นแบบปลอดภัย
                 return;
             }
 
@@ -135,9 +172,10 @@
             placeholder = document.createElement("div");
             Object.assign(placeholder.style, {
                 width: "100%", height: "100%", backgroundColor: "black",
-                display: "flex", alignItems: "center", justifyContent: "center", color: "#ccc"
+                display: "flex", alignItems: "center", justifyContent: "center", color: "#ccc",
+                fontFamily: "-apple-system, sans-serif"
             });
-            placeholder.innerText = "Popup Mode Active 🚀";
+            placeholder.innerText = "Popup Mode Active ";
             originalParent.insertBefore(placeholder, newVideo);
 
             const features = `width=${CONFIG.targetWidth},height=${CONFIG.targetHeight},left=${CONFIG.secondScreenOffsetX},top=0,menubar=no,toolbar=no,location=no,status=no`;
@@ -149,6 +187,13 @@
                 return;
             }
 
+            setTimeout(() => {
+                if (popupWindow && !popupWindow.closed) {
+                    popupWindow.moveTo(CONFIG.secondScreenOffsetX, 0);
+                    popupWindow.resizeTo(CONFIG.targetWidth, CONFIG.targetHeight);
+                }
+            }, 300);
+
             popupWindow.document.write(`
                 <!DOCTYPE html>
                 <html>
@@ -157,12 +202,19 @@
                     <style>
                         body { margin: 0; background: black; display: flex; justify-content: center; align-items: center; width: 100vw; height: 100vh; overflow: hidden; }
                         video { width: 100%; height: 100%; object-fit: contain; outline: none; }
-                        #fsBtn { position: absolute; top: 20px; right: 20px; z-index: 9999; padding: 12px 20px; background: rgba(255,0,50,0.9); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: 0.2s; }
-                        #fsBtn:hover { background: red; transform: scale(1.05); }
+                        #fsBtn { 
+                            position: absolute; top: 20px; right: 20px; z-index: 9999; 
+                            padding: 10px 16px; background: rgba(28, 28, 30, 0.7); color: white; 
+                            border: 1px solid rgba(255,255,255,0.1); border-radius: 999px; cursor: pointer; 
+                            font-size: 14px; font-weight: 500; font-family: -apple-system, sans-serif;
+                            backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+                            box-shadow: 0 4px 12px rgba(0,0,0,0.2); transition: all 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+                        }
+                        #fsBtn:hover { background: rgba(44, 44, 46, 0.9); transform: scale(1.05); }
                     </style>
                 </head>
                 <body>
-                    <button id="fsBtn">🔲 ขยายเต็มจอไร้ขอบ (Fullscreen)</button>
+                    <button id="fsBtn">⛶ Fullscreen</button>
                 </body>
                 </html>
             `);
@@ -189,8 +241,7 @@
                 popupWindow = null;
             });
 
-            newVideo.volume = CONFIG.defaultVolume;
-            newVideo.play().catch(()=>{});
+            safePlay(newVideo); // ใช้ท่าเล่นแบบปลอดภัย
 
         } catch (err) {
             console.error("Popup Error:", err);
@@ -199,7 +250,7 @@
     }
 
     function checkAndSwitchVideo() {
-        if (!popupWindow || popupWindow.closed) return;
+        if (!isEnabled || !popupWindow || popupWindow.closed) return;
         const newActive = getActiveVideo();
         if (newActive && newActive !== currentVideo) {
             openOrUpdatePopup(newActive);
@@ -207,6 +258,8 @@
     }
 
     function addPiPButton() {
+        if (!isEnabled) return;
+        
         const videos = document.querySelectorAll("video");
         videos.forEach(video => {
             if (video.dataset.pipReady) return;
@@ -216,12 +269,27 @@
             
             const btn = document.createElement("button");
             btn.className = "my-pip-btn";
-            btn.innerText = "Popup 🚀";
+            btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:-1px;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg> <span style="margin-left: 6px;">Pop Out</span>`;
+            
             Object.assign(btn.style, {
-                position: "absolute", top: "10px", right: "10px", zIndex: "9999",
-                padding: "6px 10px", background: "rgba(0,0,0,0.6)", color: "white",
-                border: "1px solid rgba(255,255,255,0.3)", borderRadius: "4px", cursor: "pointer"
+                position: "absolute", top: "14px", right: "14px", zIndex: "9999",
+                padding: "8px 14px", background: "rgba(28, 28, 30, 0.55)", color: "#FFFFFF",
+                border: "1px solid rgba(255, 255, 255, 0.15)", borderRadius: "999px", cursor: "pointer",
+                fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+                fontSize: "13px", fontWeight: "600", display: "flex", alignItems: "center",
+                boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)",
+                backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
+                transition: "all 0.25s cubic-bezier(0.25, 1, 0.5, 1)"
             });
+
+            btn.onmouseenter = () => {
+                btn.style.transform = "scale(1.05)";
+                btn.style.background = "rgba(44, 44, 46, 0.85)";
+            };
+            btn.onmouseleave = () => {
+                btn.style.transform = "scale(1)";
+                btn.style.background = "rgba(28, 28, 30, 0.55)";
+            };
 
             btn.onclick = (e) => {
                 e.preventDefault();
@@ -238,29 +306,39 @@
             let hasScrolled = false; 
 
             video.addEventListener('timeupdate', () => {
+                if (!isEnabled) return;
                 if (popupWindow && currentVideo === video && !popupWindow.closed) {
                     
-                    const isLooping = video.currentTime < lastTime - 0.5;
-                    const isNearEnd = video.duration > 0 && (video.currentTime >= video.duration - 0.5);
+                    const duration = video.duration || 0;
+                    const currentTime = video.currentTime;
+                    
+                    const isLooping = currentTime < lastTime - 1.0;
+                    const isNearEnd = duration > 0 && (currentTime >= duration - 0.5);
 
                     if ((isLooping || isNearEnd) && !hasScrolled) {
                         hasScrolled = true;
-                        scrollToNextVideo(); 
+                        
+                        if (isAutoScrollEnabled) {
+                            scrollToNextVideo(); 
+                        }
                         
                         setTimeout(() => {
                             hasScrolled = false;
                         }, 3000);
                     } else {
-                        video.muted = false; 
-                        if (video.volume === 0) video.volume = CONFIG.defaultVolume;
+                        // 🎯 ป้องกันการโดน Pause จาก Chrome
+                        if (video.muted || video.volume === 0) {
+                            safePlay(video);
+                        }
                     }
-                    lastTime = video.currentTime;
+                    lastTime = currentTime;
                 }
             });
 
             video.addEventListener('playing', () => {
+                if (!isEnabled) return;
                 if (popupWindow && currentVideo === video && !popupWindow.closed) {
-                    video.muted = false;
+                    if (video.muted) safePlay(video);
                     return;
                 }
                 if (!popupWindow || popupWindow.closed || currentVideo === video) return;
@@ -279,17 +357,19 @@
     let scrollTimeout;
     function observeForVideoChange() {
         const observer = new MutationObserver(() => {
-            addPiPButton();
+            if (isEnabled) addPiPButton();
         });
         observer.observe(document.body, { childList: true, subtree: true });
 
         window.addEventListener("scroll", () => {
-            if (!popupWindow || popupWindow.closed) return;
+            if (!isEnabled || !popupWindow || popupWindow.closed) return;
             clearTimeout(scrollTimeout);
             scrollTimeout = setTimeout(checkAndSwitchVideo, 400); 
         });
     }
 
-    setInterval(addPiPButton, 1500);
+    setInterval(() => {
+        if(isEnabled) addPiPButton();
+    }, 1500);
     observeForVideoChange();
 })();
