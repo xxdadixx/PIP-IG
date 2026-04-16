@@ -410,4 +410,18 @@
         }
     });
 
+    document.addEventListener('visibilitychange', () => {
+        if (popupWindow && !popupWindow.closed && currentVideo) {
+            if (document.hidden) {
+                // เมื่อสลับไปแท็บอื่น -> แปะป้ายว่าเราสั่งหยุด แล้วกด Pause
+                currentVideo.__isExtensionPausing = true;
+                currentVideo.pause();
+            } else {
+                // เมื่อสลับกลับมาแท็บ IG -> แปะป้ายว่าเราสั่งเล่น แล้วกด Play
+                currentVideo.__isExtensionPausing = false;
+                currentVideo.play().catch(()=>{});
+            }
+        }
+    });
+
 })();
