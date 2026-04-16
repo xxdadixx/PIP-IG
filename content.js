@@ -1,375 +1,413 @@
 (function () {
-    let isEnabled = true; 
-    let isAutoScrollEnabled = true;
+    let popupWindow = null, currentVideo = null;
+    let originalParent = null, originalSibling = null, placeholder = null;
 
-    let popupWindow = null;
-    let currentVideo = null;
-    let originalParent = null;
-    let originalSibling = null;
-    let placeholder = null;
-
-    // ==========================================
-    // ⚙️ รับคำสั่งจากสวิตช์ Toggle
-    // ==========================================
-    chrome.storage.local.get(['isEnabled', 'isAutoScrollEnabled'], (res) => {
-        isEnabled = res.isEnabled !== false;
-        isAutoScrollEnabled = res.isAutoScrollEnabled !== false;
-    });
-
-    chrome.storage.onChanged.addListener((changes) => {
-        if (changes.isEnabled) {
-            isEnabled = changes.isEnabled.newValue;
-            if (!isEnabled) {
-                document.querySelectorAll(".my-pip-btn").forEach(btn => btn.remove());
-                document.querySelectorAll("video").forEach(v => delete v.dataset.pipReady);
-                if (popupWindow && !popupWindow.closed) {
-                    restoreVideoToPage();
-                    popupWindow.close();
-                }
-            } else {
-                addPiPButton(); 
-            }
-        }
-        if (changes.isAutoScrollEnabled) {
-            isAutoScrollEnabled = changes.isAutoScrollEnabled.newValue;
-        }
-    });
-
-    // ==========================================
-    // ⚙️ ตั้งค่าพิกัดข้ามจอ
-    // ==========================================
-    const CONFIG = {
-        secondScreenOffsetX: 3540, 
-        targetWidth: 1080,         
-        targetHeight: 1920,        
-        defaultVolume: 0.15        
+    const ICONS = {
+        play: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
+        pause: '<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>',
+        rewind: '<svg viewBox="0 0 24 24"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/></svg>',
+        forward: '<svg viewBox="0 0 24 24"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>',
+        fullscreen: '<svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>',
+        volumeOn: '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>',
+        volumeOff: '<svg viewBox="0 0 24 24"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>'
     };
 
-    function getActiveVideo() {
-        const videos = [...document.querySelectorAll("video")];
-        const viewportHeight = window.innerHeight;
-        const centerY = viewportHeight / 2;
-        
-        let best = null;
-        let bestDistance = Infinity;
-        const focusZoneThreshold = viewportHeight * 0.4; 
-
-        videos.forEach(v => {
-            const rect = v.getBoundingClientRect();
-            if (rect.height > 100 && v !== currentVideo && rect.top < viewportHeight && rect.bottom > 0) {
-                const mid = rect.top + rect.height / 2;
-                const dist = Math.abs(mid - centerY);
-                if (dist < focusZoneThreshold && dist <= bestDistance) {
-                    best = v;
-                    bestDistance = dist;
-                }
-            }
-        });
-        return best;
+    function injectStyles() {
+        if (document.getElementById('ig-pip-style')) return;
+        const style = document.createElement('style');
+        style.id = 'ig-pip-style';
+        style.textContent = `
+            .apple-pip-btn { position: absolute; top: 16px; right: 16px; z-index: 9999; padding: 6px 14px; background: rgba(28,28,30,0.65); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); color: #fff; border: 0.5px solid rgba(255,255,255,0.2); border-radius: 999px; cursor: pointer; font: 500 13px -apple-system, sans-serif; display: flex; align-items: center; gap: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); transition: all 0.2s; }
+            .apple-pip-btn:hover { background: rgba(44,44,46,0.85); transform: scale(1.05); }
+            .apple-pip-btn:active { transform: scale(0.95); }
+            .apple-pip-btn svg { width: 14px; height: 14px; }
+        `;
+        document.head.appendChild(style);
     }
+    injectStyles();
 
-    function setupVideoStyle(video) {
-        video.style.width = "100vw";
-        video.style.height = "100vh";
-        video.style.objectFit = "contain";
-        video.style.background = "black";
-        video.controls = true;
-    }
-
-    function resetVideoStyle(video) {
-        video.style.width = "";
-        video.style.height = "";
-        video.style.objectFit = "";
-        video.style.background = "";
-        video.controls = false;
-        video.muted = true;
-    }
-
-    function restoreVideoToPage() {
+    function restoreVideo() {
         if (currentVideo && originalParent && placeholder) {
-            resetVideoStyle(currentVideo);
-            if (placeholder.parentNode) {
-                placeholder.parentNode.replaceChild(currentVideo, placeholder);
-            } else {
-                originalParent.insertBefore(currentVideo, originalSibling);
-            }
+            currentVideo.style.cssText = "";
+            currentVideo.controls = false;
             currentVideo.muted = true;
-            currentVideo.play().catch(()=>{});
+
+            currentVideo.onclick = null;
+            currentVideo.ondblclick = null;
+            currentVideo.onplay = null;
+            currentVideo.onpause = null;
+            currentVideo.onvolumechange = null;
+            currentVideo.ontimeupdate = null;
+
+            placeholder.parentNode ? placeholder.parentNode.replaceChild(currentVideo, placeholder) : originalParent.insertBefore(currentVideo, originalSibling);
+            currentVideo.play().catch(() => { });
         }
-        currentVideo = null;
-        originalParent = null;
-        originalSibling = null;
-        placeholder = null;
+        currentVideo = originalParent = originalSibling = placeholder = null;
     }
 
-    function scrollToNextVideo() {
-        if (!isEnabled || !isAutoScrollEnabled) return;
-        
-        const videos = [...document.querySelectorAll("video")];
-        const currentIdx = videos.indexOf(currentVideo);
+    function setupCustomPlayer(video, doc) {
+        const container = doc.getElementById('video-container');
+        container.innerHTML = '';
+        container.appendChild(video);
+        video.controls = false;
 
-        if (currentIdx !== -1 && currentIdx + 1 < videos.length) {
-            const nextVideo = videos[currentIdx + 1];
-            nextVideo.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        } else {
-            window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
-            
-            const nextBtnSvg = document.querySelector('svg[aria-label="Next"], svg[aria-label="ถัดไป"]');
-            if (nextBtnSvg) {
-                const btn = nextBtnSvg.closest('button') || nextBtnSvg.closest('a');
-                if (btn) btn.click();
+        const playBtn = doc.getElementById('play-btn');
+        const muteBtn = doc.getElementById('mute-btn');
+        const fsBtn = doc.getElementById('fs-btn');
+        const progressBar = doc.getElementById('progress-bar');
+        const progressArea = doc.getElementById('progress-area');
+        const hoverTime = doc.getElementById('hover-time');
+        const hoverBar = doc.getElementById('hover-bar'); // ตัวจับแถบสีเทา
+        const centerIcon = doc.getElementById('center-icon');
+        const volumeSlider = doc.getElementById('volume-slider');
+        const timeDisplay = doc.getElementById('time-display');
+
+        const formatTime = (time) => {
+            if (isNaN(time)) return "0:00";
+            let min = Math.floor(time / 60);
+            let sec = Math.floor(time % 60);
+            return `${min}:${sec < 10 ? '0' : ''}${sec}`;
+        };
+
+        const showAnim = (iconKey) => {
+            centerIcon.innerHTML = ICONS[iconKey];
+            centerIcon.classList.remove('animate');
+            void centerIcon.offsetWidth;
+            centerIcon.classList.add('animate');
+            setTimeout(() => centerIcon.classList.remove('animate'), 400);
+        };
+
+        const togglePlay = () => {
+            if (video.paused) {
+                video.__isExtensionPausing = false; // เราสั่งเล่น
+                video.play(); showAnim('play');
+            } else {
+                video.__isExtensionPausing = true;  // เราสั่งหยุด
+                video.pause(); showAnim('pause');
             }
-        }
-    }
+        };
 
-    // 🎯 NEW: ฟังก์ชันเล่นวิดีโอแบบป้องกัน Chrome สั่ง Pause
-    function safePlay(vid) {
-        if (!vid) return;
-        vid.muted = false;
-        vid.volume = CONFIG.defaultVolume;
-        let p = vid.play();
-        if (p !== undefined) {
-            p.catch(() => {
-                // ถ้า Chrome บล็อกเสียง ให้ยอมปิดเสียง แล้วบังคับเล่นภาพต่อ (Auto-next จะได้ไม่พัง)
-                vid.muted = true;
-                vid.play().catch(()=>{});
-            });
-        }
-    }
+        const toggleFullscreen = () => {
+            if (doc.fullscreenElement) doc.exitFullscreen();
+            else doc.documentElement.requestFullscreen();
+        };
 
-    async function openOrUpdatePopup(newVideo) {
-        if (!isEnabled || !newVideo || newVideo === currentVideo) return;
+        const updatePlayIcon = () => playBtn.innerHTML = video.paused ? ICONS.play : ICONS.pause;
+        const updateMuteIcon = () => {
+            muteBtn.innerHTML = video.muted || video.volume === 0 ? ICONS.volumeOff : ICONS.volumeOn;
+            volumeSlider.value = video.muted ? 0 : video.volume;
+        };
 
-        try {
-            if (popupWindow && !popupWindow.closed) {
-                restoreVideoToPage(); 
+        updatePlayIcon();
+        updateMuteIcon();
+        fsBtn.innerHTML = ICONS.fullscreen;
 
-                currentVideo = newVideo;
-                originalParent = newVideo.parentElement;
-                originalSibling = newVideo.nextSibling;
-
-                placeholder = document.createElement("div");
-                Object.assign(placeholder.style, {
-                    width: "100%", height: "100%", backgroundColor: "black",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    color: "#888", fontSize: "14px", fontFamily: "-apple-system, sans-serif"
-                });
-                placeholder.innerText = "Playing in Popup ";
-
-                originalParent.insertBefore(placeholder, newVideo);
-
-                setupVideoStyle(newVideo);
-                popupWindow.document.body.appendChild(newVideo);
-                
-                safePlay(newVideo); // ใช้ท่าเล่นแบบปลอดภัย
-                return;
+        video.onplay = updatePlayIcon;
+        video.onpause = () => {
+            if (!video.__isExtensionPausing && popupWindow && !popupWindow.closed) {
+                // ใส่ setTimeout หน่วงเวลา 50ms ป้องกันลูปคำสั่งชนกันรัวๆ
+                setTimeout(() => {
+                    if (popupWindow && !popupWindow.closed && video.paused) {
+                        video.play().catch(()=>{});
+                    }
+                }, 50);
+            } else {
+                updatePlayIcon();
             }
+        };
+        video.onvolumechange = updateMuteIcon;
 
-            currentVideo = newVideo;
-            originalParent = newVideo.parentElement;
-            originalSibling = newVideo.nextSibling;
-
-            placeholder = document.createElement("div");
-            Object.assign(placeholder.style, {
-                width: "100%", height: "100%", backgroundColor: "black",
-                display: "flex", alignItems: "center", justifyContent: "center", color: "#ccc",
-                fontFamily: "-apple-system, sans-serif"
-            });
-            placeholder.innerText = "Popup Mode Active ";
-            originalParent.insertBefore(placeholder, newVideo);
-
-            const features = `width=${CONFIG.targetWidth},height=${CONFIG.targetHeight},left=${CONFIG.secondScreenOffsetX},top=0,menubar=no,toolbar=no,location=no,status=no`;
-            popupWindow = window.open("", "IG_Popup_Video", features);
-
-            if (!popupWindow) {
-                alert("⚠️ เบราว์เซอร์บล็อก Popup! กรุณากดปุ่ม 'อนุญาตป๊อปอัป (Allow pop-ups)' ที่ช่อง URL มุมขวาบนครับ");
-                restoreVideoToPage();
-                return;
+        video.ontimeupdate = () => {
+            if (video.duration) {
+                progressBar.style.width = (video.currentTime / video.duration) * 100 + '%';
+                timeDisplay.innerText = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
             }
+        };
 
-            setTimeout(() => {
-                if (popupWindow && !popupWindow.closed) {
-                    popupWindow.moveTo(CONFIG.secondScreenOffsetX, 0);
-                    popupWindow.resizeTo(CONFIG.targetWidth, CONFIG.targetHeight);
+        let clickTimer = null;
+        video.onclick = () => {
+            if (clickTimer) {
+                clearTimeout(clickTimer);
+                clickTimer = null;
+            } else {
+                clickTimer = setTimeout(() => {
+                    togglePlay();
+                    clickTimer = null;
+                }, 250);
+            }
+        };
+
+        video.ondblclick = (e) => {
+            e.preventDefault();
+            if (clickTimer) {
+                clearTimeout(clickTimer);
+                clickTimer = null;
+            }
+            toggleFullscreen();
+        };
+
+        // --- ลอจิกการลาก แถบสีเทา และ ป้ายบอกเวลา ---
+        let isDragging = false;
+        let wasPlaying = false;
+
+        const updateTimeFromMouse = (e) => {
+            const rect = progressArea.getBoundingClientRect();
+            let pos = (e.clientX - rect.left) / rect.width;
+            pos = Math.max(0, Math.min(1, pos));
+            video.currentTime = pos * video.duration;
+
+            progressBar.style.width = (pos * 100) + '%';
+            timeDisplay.innerText = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
+        };
+
+        progressArea.onmousedown = (e) => {
+            isDragging = true;
+            wasPlaying = !video.paused;
+            video.__isExtensionPausing = true; // <--- เพิ่มบรรทัดนี้
+            video.pause();
+            updateTimeFromMouse(e);
+        };
+
+        // อัปเดตแถบสีเทาและเวลาเมื่อเอาเมาส์มาวาง
+        progressArea.onmousemove = (e) => {
+            const rect = progressArea.getBoundingClientRect();
+            let pos = (e.clientX - rect.left) / rect.width;
+            pos = Math.max(0, Math.min(1, pos));
+
+            // ทำให้แถบสีเทาวิ่งตามเมาส์
+            hoverBar.style.width = (pos * 100) + '%';
+            hoverTime.innerText = formatTime(pos * video.duration);
+            hoverTime.style.left = (pos * 100) + '%';
+        };
+
+        doc.onmousemove = (e) => {
+            if (isDragging) {
+                updateTimeFromMouse(e);
+
+                // ให้แถบสีเทาและป้ายเวลาวิ่งตามแม้จะลากเมาส์ออกนอกเส้น
+                const rect = progressArea.getBoundingClientRect();
+                let pos = (e.clientX - rect.left) / rect.width;
+                pos = Math.max(0, Math.min(1, pos));
+
+                hoverBar.style.width = (pos * 100) + '%';
+                hoverTime.innerText = formatTime(pos * video.duration);
+                hoverTime.style.left = (pos * 100) + '%';
+            }
+        };
+
+        doc.onmouseup = () => {
+            if (isDragging) {
+                isDragging = false;
+                if (wasPlaying) {
+                    video.__isExtensionPausing = false; // <--- เพิ่มบรรทัดนี้
+                    video.play();
                 }
-            }, 300);
+            }
+        };
+
+        playBtn.onclick = togglePlay;
+        muteBtn.onclick = () => { video.muted = !video.muted; };
+        fsBtn.onclick = toggleFullscreen;
+
+        volumeSlider.oninput = (e) => {
+            video.volume = e.target.value;
+            video.muted = (video.volume === 0);
+        };
+
+        doc.onkeydown = (e) => {
+            if (e.code === 'Space' || e.code === 'KeyK') { e.preventDefault(); togglePlay(); }
+            if (e.code === 'KeyF') { e.preventDefault(); toggleFullscreen(); }
+            if (e.code === 'KeyM') { e.preventDefault(); video.muted = !video.muted; }
+            if (e.code === 'ArrowRight' || e.code === 'KeyL') { e.preventDefault(); video.currentTime += 5; showAnim('forward'); }
+            if (e.code === 'ArrowLeft' || e.code === 'KeyJ') { e.preventDefault(); video.currentTime -= 5; showAnim('rewind'); }
+            if (e.code === 'ArrowUp') { e.preventDefault(); video.volume = Math.min(1, video.volume + 0.1); }
+            if (e.code === 'ArrowDown') { e.preventDefault(); video.volume = Math.max(0, video.volume - 0.1); }
+        };
+    }
+
+    async function launchPopup(newVideo) {
+        if (!newVideo || newVideo === currentVideo) return;
+        if (popupWindow && !popupWindow.closed) restoreVideo();
+
+        currentVideo = newVideo;
+        originalParent = newVideo.parentElement;
+        originalSibling = newVideo.nextSibling;
+
+        placeholder = document.createElement("div");
+        placeholder.style.cssText = "width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center;color:#888;font-size:14px;";
+        placeholder.innerText = "Playing in PiP ";
+        originalParent.insertBefore(placeholder, newVideo);
+
+        newVideo.style.cssText = "width:100%;height:100%;object-fit:contain;background:#000;";
+        newVideo.muted = false;
+        newVideo.volume = 0.2;
+
+        if (!popupWindow || popupWindow.closed) {
+            popupWindow = window.open("", "IG_Popup_Video", "popup=yes,width=450,height=800,menubar=no,toolbar=no,location=no,status=no,titlebar=no");
+            if (!popupWindow) return restoreVideo();
 
             popupWindow.document.write(`
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <title>IG Video - Popup</title>
-                    <style>
-                        body { margin: 0; background: black; display: flex; justify-content: center; align-items: center; width: 100vw; height: 100vh; overflow: hidden; }
-                        video { width: 100%; height: 100%; object-fit: contain; outline: none; }
-                        #fsBtn { 
-                            position: absolute; top: 20px; right: 20px; z-index: 9999; 
-                            padding: 10px 16px; background: rgba(28, 28, 30, 0.7); color: white; 
-                            border: 1px solid rgba(255,255,255,0.1); border-radius: 999px; cursor: pointer; 
-                            font-size: 14px; font-weight: 500; font-family: -apple-system, sans-serif;
-                            backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-                            box-shadow: 0 4px 12px rgba(0,0,0,0.2); transition: all 0.3s cubic-bezier(0.25, 1, 0.5, 1);
-                        }
-                        #fsBtn:hover { background: rgba(44, 44, 46, 0.9); transform: scale(1.05); }
-                    </style>
-                </head>
-                <body>
-                    <button id="fsBtn">⛶ Fullscreen</button>
-                </body>
-                </html>
+                <!DOCTYPE html><html><head><title>IG - Custom Player</title><style>
+                body { margin:0; background:#000; display:flex; justify-content:center; align-items:center; height:100vh; overflow:hidden; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; user-select:none; cursor: default; }
+                body.hide-cursor { cursor: none; }
+                #video-container { position:absolute; top:0; left:0; width:100%; height:100%; z-index:1; display:flex; }
+                
+                #center-icon { position:absolute; top:50%; left:50%; transform:translate(-50%, -50%) scale(1.5); background:rgba(0,0,0,0.6); backdrop-filter:blur(8px); border-radius:50%; padding:20px; color:white; display:flex; justify-content:center; align-items:center; opacity:0; pointer-events:none; transition:opacity 0.2s, transform 0.2s; z-index:3; }
+                #center-icon.animate { opacity:1; transform:translate(-50%, -50%) scale(1); }
+                #center-icon svg { width:44px; height:44px; fill:white; }
+                
+                #controls-wrapper { position:absolute; bottom:0; left:0; width:100%; padding:0 12px 12px; background:linear-gradient(transparent, rgba(0,0,0,0.9) 85%); box-sizing:border-box; z-index:4; opacity:0; transition:opacity 0.25s ease; }
+                body:hover #controls-wrapper { opacity:1; }
+                
+                /* แถบพื้นที่ของ Time-line */
+                .progress-area { width:100%; height:4px; background:rgba(255,255,255,0.2); cursor:pointer; margin-bottom:12px; position:relative; transition:height 0.1s ease; }
+                .progress-area:hover { height:6px; }
+                
+                /* แถบสีเทา (Hover Preview) */
+                .hover-bar { position:absolute; top:0; left:0; height:100%; background:rgba(255,255,255,0.4); width:0%; pointer-events:none; z-index:1; opacity:0; transition:opacity 0.1s ease; }
+                .progress-area:hover .hover-bar { opacity:1; }
+                
+                /* แถบสีแดง (เล่นจริง) */
+                .progress-bar { position:absolute; top:0; left:0; height:100%; background:#f00; width:0%; pointer-events:none; z-index:2; }
+                
+                /* จุดสีแดง (เปลี่ยนให้โชว์ตลอดเวลาเป็น scale(1) และขยายขึ้นเมื่อ hover) */
+                .progress-bar::after { content:''; position:absolute; right:-6.5px; top:50%; transform:translateY(-50%) scale(1); width:13px; height:13px; background:#f00; border-radius:50%; transition:transform 0.1s ease; z-index:3; }
+                .progress-area:hover .progress-bar::after { transform:translateY(-50%) scale(1.2); }
+                
+                #hover-time { position:absolute; bottom:14px; left:0; transform:translateX(-50%); background:rgba(0,0,0,0.8); color:#fff; padding:4px 8px; font-size:12px; font-weight:500; border-radius:4px; pointer-events:none; opacity:0; transition:opacity 0.1s ease; white-space:nowrap; z-index:4; }
+                .progress-area:hover #hover-time { opacity:1; }
+                
+                .buttons { display:flex; align-items:center; gap:16px; margin-top:4px; }
+                .btn { background:none; border:none; color:white; cursor:pointer; padding:0; display:flex; align-items:center; opacity:0.85; transition:opacity 0.2s; }
+                .btn:hover { opacity:1; }
+                .btn svg { width:26px; height:26px; fill:currentColor; }
+                
+                .volume-container { display:flex; align-items:center; gap:4px; }
+                .volume-slider { width:0; opacity:0; transition:width 0.25s ease, opacity 0.25s ease; }
+                .volume-container:hover .volume-slider { width:65px; opacity:1; margin-left:8px; }
+                input[type=range] { -webkit-appearance:none; background:transparent; cursor:pointer; }
+                input[type=range]::-webkit-slider-runnable-track { width:100%; height:3px; background:rgba(255,255,255,0.3); border-radius:2px; }
+                input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; height:12px; width:12px; border-radius:50%; background:#fff; margin-top:-4.5px; box-shadow: 0 0 2px rgba(0,0,0,0.5); }
+                
+                .time-display { color:#fff; font-size:13px; font-weight:400; font-variant-numeric:tabular-nums; margin-left:8px; }
+                .spacer { flex-grow:1; }
+                </style></head><body>
+                
+                <div id="video-container"></div><div id="center-icon"></div>
+                <div id="controls-wrapper">
+                    <div class="progress-area" id="progress-area">
+                        <div class="hover-bar" id="hover-bar"></div>
+                        <div class="progress-bar" id="progress-bar"></div>
+                        <div id="hover-time">0:00</div>
+                    </div>
+                    <div class="buttons">
+                        <button class="btn" id="play-btn"></button>
+                        <div class="volume-container">
+                            <button class="btn" id="mute-btn"></button>
+                            <input type="range" class="volume-slider" id="volume-slider" min="0" max="1" step="0.05">
+                        </div>
+                        <div class="time-display" id="time-display">0:00 / 0:00</div>
+                        <div class="spacer"></div>
+                        <button class="btn" id="fs-btn"></button>
+                    </div>
+                </div>
+                </body></html>
             `);
             popupWindow.document.close();
 
-            setupVideoStyle(newVideo);
-            popupWindow.document.body.appendChild(newVideo);
+            let mouseTimer;
+            popupWindow.document.body.onmousemove = () => {
+                if (!popupWindow || popupWindow.closed) return;
 
-            const fsBtn = popupWindow.document.getElementById('fsBtn');
-            fsBtn.addEventListener('click', () => {
-                popupWindow.document.documentElement.requestFullscreen().then(() => {
-                    fsBtn.style.display = 'none'; 
-                }).catch(err => console.warn("Fullscreen failed:", err));
-            });
-
-            popupWindow.document.addEventListener('fullscreenchange', () => {
-                if (!popupWindow.document.fullscreenElement) {
-                    fsBtn.style.display = 'block';
-                }
-            });
-
-            popupWindow.addEventListener("beforeunload", () => {
-                restoreVideoToPage();
-                popupWindow = null;
-            });
-
-            safePlay(newVideo); // ใช้ท่าเล่นแบบปลอดภัย
-
-        } catch (err) {
-            console.error("Popup Error:", err);
-            restoreVideoToPage();
-        }
-    }
-
-    function checkAndSwitchVideo() {
-        if (!isEnabled || !popupWindow || popupWindow.closed) return;
-        const newActive = getActiveVideo();
-        if (newActive && newActive !== currentVideo) {
-            openOrUpdatePopup(newActive);
-        }
-    }
-
-    function addPiPButton() {
-        if (!isEnabled) return;
-        
-        const videos = document.querySelectorAll("video");
-        videos.forEach(video => {
-            if (video.dataset.pipReady) return;
-            video.dataset.pipReady = "true";
-
-            const parent = video.parentElement;
-            
-            const btn = document.createElement("button");
-            btn.className = "my-pip-btn";
-            btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:-1px;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg> <span style="margin-left: 6px;">Pop Out</span>`;
-            
-            Object.assign(btn.style, {
-                position: "absolute", top: "14px", right: "14px", zIndex: "9999",
-                padding: "8px 14px", background: "rgba(28, 28, 30, 0.55)", color: "#FFFFFF",
-                border: "1px solid rgba(255, 255, 255, 0.15)", borderRadius: "999px", cursor: "pointer",
-                fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
-                fontSize: "13px", fontWeight: "600", display: "flex", alignItems: "center",
-                boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)",
-                backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
-                transition: "all 0.25s cubic-bezier(0.25, 1, 0.5, 1)"
-            });
-
-            btn.onmouseenter = () => {
-                btn.style.transform = "scale(1.05)";
-                btn.style.background = "rgba(44, 44, 46, 0.85)";
-            };
-            btn.onmouseleave = () => {
-                btn.style.transform = "scale(1)";
-                btn.style.background = "rgba(28, 28, 30, 0.55)";
-            };
-
-            btn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                openOrUpdatePopup(video);
-            };
-
-            if (window.getComputedStyle(parent).position === 'static') {
-                parent.style.position = 'relative';
-            }
-            parent.appendChild(btn);
-
-            let lastTime = 0;
-            let hasScrolled = false; 
-
-            video.addEventListener('timeupdate', () => {
-                if (!isEnabled) return;
-                if (popupWindow && currentVideo === video && !popupWindow.closed) {
-                    
-                    const duration = video.duration || 0;
-                    const currentTime = video.currentTime;
-                    
-                    const isLooping = currentTime < lastTime - 1.0;
-                    const isNearEnd = duration > 0 && (currentTime >= duration - 0.5);
-
-                    if ((isLooping || isNearEnd) && !hasScrolled) {
-                        hasScrolled = true;
-                        
-                        if (isAutoScrollEnabled) {
-                            scrollToNextVideo(); 
-                        }
-                        
-                        setTimeout(() => {
-                            hasScrolled = false;
-                        }, 3000);
-                    } else {
-                        // 🎯 ป้องกันการโดน Pause จาก Chrome
-                        if (video.muted || video.volume === 0) {
-                            safePlay(video);
-                        }
+                popupWindow.document.body.classList.remove('hide-cursor');
+                clearTimeout(mouseTimer);
+                mouseTimer = setTimeout(() => {
+                    if (popupWindow && !popupWindow.closed && popupWindow.document.fullscreenElement) {
+                        popupWindow.document.body.classList.add('hide-cursor');
                     }
-                    lastTime = currentTime;
-                }
-            });
+                }, 2000);
+            };
 
-            video.addEventListener('playing', () => {
-                if (!isEnabled) return;
-                if (popupWindow && currentVideo === video && !popupWindow.closed) {
-                    if (video.muted) safePlay(video);
-                    return;
-                }
-                if (!popupWindow || popupWindow.closed || currentVideo === video) return;
-                
+            popupWindow.onbeforeunload = () => { restoreVideo(); popupWindow = null; };
+        }
+
+        // 1. จำเวลาเดิมก่อนถูกย้ายหน้าต่าง
+        const savedTime = newVideo.currentTime;
+
+        setupCustomPlayer(newVideo, popupWindow.document);
+
+        // 1. กระตุ้นเฟรมภาพ (Repaint) เพื่อแก้บัคจอดำค้าง
+        newVideo.style.display = 'none';
+        void newVideo.offsetHeight;
+        newVideo.style.display = 'block';
+
+        // 2. หลอกระบบป้องกันเสียงของเบราว์เซอร์
+        newVideo.__isExtensionPausing = false;
+        newVideo.muted = true; // ปิดเสียงไปก่อน เบราว์เซอร์จะได้ยอมให้เล่นภาพ
+
+        newVideo.play().then(() => {
+            // พอภาพขยับแล้ว ค่อยแอบเปิดเสียงขึ้นมา 20%
+            newVideo.muted = false;
+            newVideo.volume = 0.2;
+        }).catch(() => { });
+    }
+
+    function initVideo(video) {
+        if (video.dataset.pipReady) return;
+        video.dataset.pipReady = "true";
+
+        const btn = document.createElement("button");
+        btn.className = "apple-pip-btn";
+        btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><rect x="12" y="12" width="7" height="7" rx="1" ry="1"></rect></svg> PiP`;
+
+        btn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); launchPopup(video); };
+
+        const parent = video.parentElement;
+        if (window.getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
+        parent.appendChild(btn);
+
+        video.addEventListener('playing', () => {
+            if (popupWindow && currentVideo === video && !popupWindow.closed) {
+                video.muted = false;
+            } else if (popupWindow && !popupWindow.closed && currentVideo !== video) {
                 setTimeout(() => {
-                    const rect = video.getBoundingClientRect();
-                    const isVisible = rect.top < window.innerHeight && rect.bottom > 0 && rect.height > 100;
-                    if (!video.paused && isVisible) {
-                        openOrUpdatePopup(video);
-                    }
+                    const r = video.getBoundingClientRect();
+                    if (!video.paused && r.top < window.innerHeight && r.bottom > 0 && r.height > 100) launchPopup(video);
                 }, 300);
-            });
+            }
         });
+    }
+
+    const observer = new MutationObserver(() => document.querySelectorAll("video").forEach(initVideo));
+    observer.observe(document.body, { childList: true, subtree: true });
+    setInterval(() => document.querySelectorAll("video").forEach(initVideo), 1500);
+
+    function getActiveVideo() {
+        const centerY = window.innerHeight / 2;
+        return [...document.querySelectorAll("video")].reduce((best, v) => {
+            const rect = v.getBoundingClientRect();
+            if (rect.height > 100 && v !== currentVideo && rect.top < window.innerHeight && rect.bottom > 0) {
+                const dist = Math.abs((rect.top + rect.height / 2) - centerY);
+                if (dist < (best.dist || window.innerHeight * 0.3)) return { v, dist };
+            }
+            return best;
+        }, {}).v || null;
     }
 
     let scrollTimeout;
-    function observeForVideoChange() {
-        const observer = new MutationObserver(() => {
-            if (isEnabled) addPiPButton();
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener("scroll", () => {
+        if (!popupWindow || popupWindow.closed) return;
+        clearTimeout(scrollTimeout);
+        scrollTimeout = setTimeout(() => {
+            const nextVideo = getActiveVideo();
+            if (nextVideo && nextVideo !== currentVideo) launchPopup(nextVideo);
+        }, 400);
+    });
 
-        window.addEventListener("scroll", () => {
-            if (!isEnabled || !popupWindow || popupWindow.closed) return;
-            clearTimeout(scrollTimeout);
-            scrollTimeout = setTimeout(checkAndSwitchVideo, 400); 
-        });
-    }
+    window.addEventListener('unload', () => {
+        if (popupWindow && !popupWindow.closed) {
+            popupWindow.close();
+        }
+    });
 
-    setInterval(() => {
-        if(isEnabled) addPiPButton();
-    }, 1500);
-    observeForVideoChange();
 })();

@@ -1,21 +1,16 @@
 {
   "manifest_version": 3,
-  "name": "Instagram PiP Fullscreen",
-  "version": "1.0",
-  "description": "Add Picture-in-Picture button for Instagram videos with fullscreen mode.",
+  "name": "IG Continuity PiP",
+  "version": "3.0",
+  "description": "Seamless Apple-style PiP for Instagram that stays fullscreen.",
   "permissions": [
     "activeTab",
-    "scripting",
-    "storage"
+    "scripting"
   ],
-  "action": {
-    "default_title": "PiP Mode",
-    "default_popup": "popup.html"
-  },
   "content_scripts": [
     {
       "matches": [
-        "*://www.instagram.com/*"
+        "*://*.instagram.com/*"
       ],
       "js": [
         "content.js"
