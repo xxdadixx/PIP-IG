@@ -346,17 +346,24 @@
         newVideo.muted = true; // ปิดเสียงไปก่อน เบราว์เซอร์จะได้ยอมให้เล่นภาพ
 
         newVideo.play().then(() => {
-            // พอภาพขยับแล้ว ค่อยแอบเปิดเสียงขึ้นมา 20%
-            newVideo.muted = false;
+            // เช็คว่าผู้ใช้เคยคลิกในหน้าต่าง Popup นี้หรือยัง? (เช็คด้วย userActivation API)
+            if (popupWindow.navigator.userActivation && popupWindow.navigator.userActivation.hasBeenActive) {
+                newVideo.muted = false; // ถ้าเคยคลิกแล้ว เปิดเสียงได้เลย Chrome อนุญาต
+            } else {
+                newVideo.muted = true;  // ถ้ายังไม่เคยคลิก ให้เล่นแบบปิดเสียงไปก่อน
+            }
             newVideo.volume = 0.2;
         }).catch(() => { });
     }
 
     function initVideo(video) {
+        if (window.location.pathname.includes('/stories/')) return;
+
         if (video.dataset.pipReady) return;
         video.dataset.pipReady = "true";
-
+        
         const btn = document.createElement("button");
+
         btn.className = "apple-pip-btn";
         btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><rect x="12" y="12" width="7" height="7" rx="1" ry="1"></rect></svg> PiP`;
 
@@ -367,8 +374,7 @@
         parent.appendChild(btn);
 
         video.addEventListener('playing', () => {
-            if (popupWindow && currentVideo === video && !popupWindow.closed) {
-                video.muted = false;
+            if (popupWindow && currentVideo === video && !popupWindow.closed) {                video.muted = false;
             } else if (popupWindow && !popupWindow.closed && currentVideo !== video) {
                 setTimeout(() => {
                     const r = video.getBoundingClientRect();
