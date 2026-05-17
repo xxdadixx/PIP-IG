@@ -108,7 +108,7 @@
                 // ใส่ setTimeout หน่วงเวลา 50ms ป้องกันลูปคำสั่งชนกันรัวๆ
                 setTimeout(() => {
                     if (popupWindow && !popupWindow.closed && video.paused) {
-                        video.play().catch(()=>{});
+                        video.play().catch(() => { });
                     }
                 }, 50);
             } else {
@@ -361,7 +361,7 @@
 
         if (video.dataset.pipReady) return;
         video.dataset.pipReady = "true";
-        
+
         const btn = document.createElement("button");
 
         btn.className = "apple-pip-btn";
@@ -374,7 +374,8 @@
         parent.appendChild(btn);
 
         video.addEventListener('playing', () => {
-            if (popupWindow && currentVideo === video && !popupWindow.closed) {                video.muted = false;
+            if (popupWindow && currentVideo === video && !popupWindow.closed) {
+                video.muted = false;
             } else if (popupWindow && !popupWindow.closed && currentVideo !== video) {
                 setTimeout(() => {
                     const r = video.getBoundingClientRect();
@@ -383,10 +384,6 @@
             }
         });
     }
-
-    const observer = new MutationObserver(() => document.querySelectorAll("video").forEach(initVideo));
-    observer.observe(document.body, { childList: true, subtree: true });
-    setInterval(() => document.querySelectorAll("video").forEach(initVideo), 1500);
 
     function getActiveVideo() {
         const centerY = window.innerHeight / 2;
@@ -400,16 +397,71 @@
         }, {}).v || null;
     }
 
+    let isExtensionEnabled = true;
+    let isAutoScrollEnabled = true;
+
+    // Fetch initial settings from the popup
+    chrome.storage.local.get(['isEnabled', 'isAutoScrollEnabled'], (res) => {
+        if (res.isEnabled !== undefined) isExtensionEnabled = res.isEnabled;
+        if (res.isAutoScrollEnabled !== undefined) isAutoScrollEnabled = res.isAutoScrollEnabled;
+
+        if (isExtensionEnabled) {
+            startExtensionObservers();
+        }
+    });
+
+    // Listen for live changes from the popup
+    chrome.storage.onChanged.addListener((changes, namespace) => {
+        if (changes.isEnabled) {
+            isExtensionEnabled = changes.isEnabled.newValue;
+            if (isExtensionEnabled) {
+                startExtensionObservers();
+            } else {
+                // Clean up UI if disabled
+                document.querySelectorAll('.apple-pip-btn').forEach(btn => btn.remove());
+                document.querySelectorAll("video").forEach(v => delete v.dataset.pipReady);
+                if (popupWindow && !popupWindow.closed) restoreVideo();
+            }
+        }
+        if (changes.isAutoScrollEnabled) {
+            isAutoScrollEnabled = changes.isAutoScrollEnabled.newValue;
+        }
+    });
+
+    // Encapsulate the observer logic so it only runs when enabled
+    function startExtensionObservers() {
+        document.querySelectorAll("video").forEach(initVideo);
+
+        const observer = new MutationObserver(() => {
+            if (isExtensionEnabled) document.querySelectorAll("video").forEach(initVideo);
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        // Use a safer interval check that respects the toggle
+        setInterval(() => {
+            if (isExtensionEnabled) document.querySelectorAll("video").forEach(initVideo);
+        }, 1500);
+    }
+
     let scrollTimeout;
     window.addEventListener("scroll", () => {
+        if (!isExtensionEnabled || !isAutoScrollEnabled) return; // Respect User Settings
         if (!popupWindow || popupWindow.closed) return;
+
         clearTimeout(scrollTimeout);
         scrollTimeout = setTimeout(() => {
             const nextVideo = getActiveVideo();
-            if (nextVideo && nextVideo !== currentVideo) launchPopup(nextVideo);
+            // In Brave, triggering window.open on scroll might trigger the popup blocker.
+            // The catch block ensures the extension doesn't crash if Brave blocks it.
+            try {
+                if (nextVideo && nextVideo !== currentVideo) launchPopup(nextVideo);
+            } catch (err) {
+                console.warn("Brave/Chrome Popup Blocker prevented auto-scroll PiP launch.");
+            }
         }, 400);
     });
 
+    // Restored: Close the popup if the main tab is closed
     window.addEventListener('unload', () => {
         if (popupWindow && !popupWindow.closed) {
             popupWindow.close();
@@ -419,13 +471,11 @@
     document.addEventListener('visibilitychange', () => {
         if (popupWindow && !popupWindow.closed && currentVideo) {
             if (document.hidden) {
-                // เมื่อสลับไปแท็บอื่น -> แปะป้ายว่าเราสั่งหยุด แล้วกด Pause
                 currentVideo.__isExtensionPausing = true;
                 currentVideo.pause();
             } else {
-                // เมื่อสลับกลับมาแท็บ IG -> แปะป้ายว่าเราสั่งเล่น แล้วกด Play
                 currentVideo.__isExtensionPausing = false;
-                currentVideo.play().catch(()=>{});
+                currentVideo.play().catch(() => { });
             }
         }
     });

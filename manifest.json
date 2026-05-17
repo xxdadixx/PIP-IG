@@ -5,8 +5,14 @@
   "description": "Seamless Apple-style PiP for Instagram that stays fullscreen.",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "storage",          
+    "system.display"    
   ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon.png"
+  },
   "content_scripts": [
     {
       "matches": [
