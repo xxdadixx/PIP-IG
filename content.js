@@ -367,11 +367,40 @@
         btn.className = "apple-pip-btn";
         btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><rect x="12" y="12" width="7" height="7" rx="1" ry="1"></rect></svg> PiP`;
 
-        btn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); launchPopup(video); };
+        // 🚨 FIX 1: Prevent React Event Bubbling
+        // Stop all early interaction events from reaching Instagram's root listeners
+        // so Instagram doesn't think the user is trying to pause the video.
+        const stopReactTrap = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        };
 
-        const parent = video.parentElement;
-        if (window.getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
-        parent.appendChild(btn);
+        // We catch mousedown, pointerdown, touchstart, etc. BEFORE a click registers
+        ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend', 'click', 'dblclick'].forEach(evt => {
+            btn.addEventListener(evt, stopReactTrap);
+        });
+
+        // Launch PiP only on explicit click
+        btn.addEventListener('click', () => {
+            launchPopup(video);
+        });
+
+        // 🚨 FIX 2: Escape the CSS Stacking Context Trap
+        // Instagram places an invisible UI shield over `video.parentElement`.
+        // We append the button to the grandparent to sit safely ON TOP of that shield.
+        let targetContainer = video.parentElement;
+        if (targetContainer && targetContainer.parentElement) {
+            targetContainer = targetContainer.parentElement;
+        }
+
+        if (window.getComputedStyle(targetContainer).position === 'static') {
+            targetContainer.style.position = 'relative';
+        }
+
+        // Force the absolute maximum z-index allowed by browsers just to be safe
+        btn.style.zIndex = "2147483647";
+
+        targetContainer.appendChild(btn);
 
         video.addEventListener('playing', () => {
             if (popupWindow && currentVideo === video && !popupWindow.closed) {
