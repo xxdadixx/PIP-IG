@@ -1,7 +1,7 @@
 (function () {
     let popupWindow = null, currentVideo = null;
     let originalParent = null, originalSibling = null, placeholder = null, originalStyle = "";
-    let originalControls = false; 
+    let originalControls = false;
 
     const ICONS = {
         play: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
@@ -32,13 +32,13 @@
         `;
         document.head.appendChild(style);
     }
-    
+
     function createGlobalButton() {
         if (document.getElementById('ig-global-pip-btn')) return;
         globalPipBtn = document.createElement('button');
         globalPipBtn.id = 'ig-global-pip-btn';
         globalPipBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><rect x="12" y="12" width="7" height="7" rx="1" ry="1"></rect></svg> PiP`;
-        
+
         // Block React traps completely
         ['mousedown', 'mouseup', 'click', 'dblclick'].forEach(evt => {
             globalPipBtn.addEventListener(evt, (e) => {
@@ -53,7 +53,7 @@
 
         document.body.appendChild(globalPipBtn);
     }
-    
+
     injectStyles();
     createGlobalButton();
 
@@ -65,47 +65,50 @@
             currentVideo.pause();
 
             // 2. Explicitly transfer GPU and DOM ownership back to the main window
-            try { document.adoptNode(currentVideo); } catch (e) {}
+            try { document.adoptNode(currentVideo); } catch (e) { }
 
             // 3. Restore layout natively
             currentVideo.style.cssText = originalStyle || "";
             currentVideo.controls = false;
             currentVideo.muted = true;
-            
+
             // Clean up ONLY our custom event listeners to avoid extension conflicts
-            currentVideo.onclick = null; 
-            currentVideo.ondblclick = null; 
-            delete currentVideo.onplay; 
-            delete currentVideo.onpause; 
-            delete currentVideo.onvolumechange; 
+            currentVideo.onclick = null;
+            currentVideo.ondblclick = null;
+            delete currentVideo.onplay;
+            delete currentVideo.onpause;
+            delete currentVideo.onvolumechange;
             delete currentVideo.ontimeupdate;
 
             // 4. Check if the original post still exists on the page
             const isParentAlive = document.body.contains(placeholder) || document.body.contains(originalParent);
 
             if (isParentAlive) {
-                // The post is still there. Safely inject back into the DOM.
                 if (document.body.contains(placeholder)) {
                     placeholder.parentNode.replaceChild(currentVideo, placeholder);
                 } else {
                     originalParent.insertBefore(currentVideo, originalSibling);
                 }
 
-                // 🚨 BUG 1 FIX: The "Double-Frame" Render Sync
-                // Guarantees Chromium repaints the GPU texture before playback
+                // 🚨 BUG 1 FIX: Prevent Black Screen Context Loss
                 const targetVideo = currentVideo;
+                const savedTime = targetVideo.currentTime;
+
+                // Force browser to re-initialize the media engine for this element
+                targetVideo.load();
+                targetVideo.currentTime = savedTime;
+
+                // Guarantees Chromium repaints the GPU texture before playback
                 window.requestAnimationFrame(() => {
                     window.requestAnimationFrame(() => {
                         if (targetVideo.readyState >= 2) {
-                            targetVideo.currentTime += 0.001; 
+                            targetVideo.currentTime += 0.001;
                         }
-                        targetVideo.play().catch(() => {});
+                        targetVideo.play().catch(() => { });
                     });
                 });
             } else {
-                // 🚨 BUG 2 FIX: The user navigated to the "Next Post".
-                // The container is gone. Completely kill the video stream 
-                // so it doesn't play ghost audio in the background.
+                // The user navigated away and the container is completely gone.
                 currentVideo.pause();
                 currentVideo.removeAttribute('src');
                 currentVideo.load();
@@ -232,19 +235,25 @@
         setupCustomPlayer(newVideo, popupWindow.document);
         newVideo.style.display = 'none'; void newVideo.offsetHeight; newVideo.style.display = 'block';
         newVideo.__isExtensionPausing = false; newVideo.muted = true;
-        newVideo.play().then(() => { 
-            if (popupWindow.navigator.userActivation && popupWindow.navigator.userActivation.hasBeenActive) { 
-                newVideo.muted = false; 
-            } else { 
-                newVideo.muted = true; 
-            } 
-            newVideo.volume = 0.2; 
+        newVideo.play().then(() => {
+            if (popupWindow.navigator.userActivation && popupWindow.navigator.userActivation.hasBeenActive) {
+                newVideo.muted = false;
+            } else {
+                newVideo.muted = true;
+            }
+            newVideo.volume = 0.2;
         }).catch(() => { });
-        
+
+        const activePopupUrl = window.location.href;
+
         clearInterval(pipMonitorInterval);
         pipMonitorInterval = setInterval(() => {
-            if (popupWindow && !popupWindow.closed && placeholder) {
-                if (!document.body.contains(placeholder)) {
+            if (popupWindow && !popupWindow.closed && placeholder) { 
+                // Check if user navigated to another post (URL changed) OR placeholder was destroyed
+                const urlChanged = window.location.href !== activePopupUrl;
+                const placeholderRemoved = !document.body.contains(placeholder);
+
+                if (urlChanged || placeholderRemoved) {
                     popupWindow.close(); // Triggers restoreVideo automatically
                 }
             } else {
@@ -285,7 +294,7 @@
     let mouseTrackerTimer = null;
     document.addEventListener('mousemove', (e) => {
         if (!isExtensionEnabled || !globalPipBtn) return;
-        
+
         if (mouseTrackerTimer) return; // Throttle for performance
         mouseTrackerTimer = setTimeout(() => {
             mouseTrackerTimer = null;
@@ -293,9 +302,9 @@
             // Check if mouse is directly over our button
             const btnRect = globalPipBtn.getBoundingClientRect();
             const isHoveringBtn = globalPipBtn.classList.contains('visible') &&
-                                  e.clientX >= btnRect.left && e.clientX <= btnRect.right &&
-                                  e.clientY >= btnRect.top && e.clientY <= btnRect.bottom;
-            if (isHoveringBtn) return; 
+                e.clientX >= btnRect.left && e.clientX <= btnRect.right &&
+                e.clientY >= btnRect.top && e.clientY <= btnRect.bottom;
+            if (isHoveringBtn) return;
 
             // Find which video the mouse is currently hovering over
             let foundVideo = null;
@@ -319,7 +328,7 @@
                 activeHoverVideo = null;
                 globalPipBtn.classList.remove('visible');
             }
-        }, 50); 
+        }, 50);
     });
 
     // Hide UI cleanly when scrolling
@@ -378,7 +387,7 @@
 
     let scrollTimeout;
     window.addEventListener("scroll", () => {
-        if (!isExtensionEnabled || !isAutoScrollEnabled) return; 
+        if (!isExtensionEnabled || !isAutoScrollEnabled) return;
         if (!popupWindow || popupWindow.closed) return;
         clearTimeout(scrollTimeout);
         scrollTimeout = setTimeout(() => {
@@ -394,7 +403,7 @@
     window.addEventListener('unload', () => { if (popupWindow && !popupWindow.closed) popupWindow.close(); });
     document.addEventListener('visibilitychange', () => {
         if (popupWindow && !popupWindow.closed && currentVideo) {
-            if (document.hidden) { currentVideo.__isExtensionPausing = true; currentVideo.pause(); } 
+            if (document.hidden) { currentVideo.__isExtensionPausing = true; currentVideo.pause(); }
             else { currentVideo.__isExtensionPausing = false; currentVideo.play().catch(() => { }); }
         }
     });
