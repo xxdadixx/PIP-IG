@@ -23,6 +23,22 @@
       '<svg viewBox="0 0 24 24"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>',
   };
 
+  // --- MAIN WORLD SYNC BRIDGE (BVI COMPATIBILITY) ---
+  if (!window.__pipAudioInjected) {
+    window.__pipAudioInjected = true;
+    const script = document.createElement('script');
+    script.src = chrome.runtime.getURL('inject.js');
+    script.onload = function() { this.remove(); };
+    (document.head || document.documentElement).appendChild(script);
+  }
+
+  const syncVolumeToMainWorld = (vid, newVol, isMuted) => {
+    vid.dataset.pipVolume = newVol;
+    vid.dataset.pipMuted = isMuted;
+    vid.dataset.pipSync = "true";
+    document.dispatchEvent(new CustomEvent('BVI_PiP_SyncVolume'));
+  };
+
   // --- 1. GLOBAL UI SYSTEM ---
   let globalPipBtn = null;
   let activeHoverVideo = null;
@@ -101,10 +117,22 @@
 
       // Clean up ONLY our custom event listeners safely
       if (currentVideo.__pipHandlers) {
-        currentVideo.removeEventListener('play', currentVideo.__pipHandlers.play);
-        currentVideo.removeEventListener('pause', currentVideo.__pipHandlers.pause);
-        currentVideo.removeEventListener('volumechange', currentVideo.__pipHandlers.volumechange);
-        currentVideo.removeEventListener('timeupdate', currentVideo.__pipHandlers.timeupdate);
+        currentVideo.removeEventListener(
+          "play",
+          currentVideo.__pipHandlers.play,
+        );
+        currentVideo.removeEventListener(
+          "pause",
+          currentVideo.__pipHandlers.pause,
+        );
+        currentVideo.removeEventListener(
+          "volumechange",
+          currentVideo.__pipHandlers.volumechange,
+        );
+        currentVideo.removeEventListener(
+          "timeupdate",
+          currentVideo.__pipHandlers.timeupdate,
+        );
         delete currentVideo.__pipHandlers;
       }
     }
@@ -197,15 +225,17 @@
       if (!video.__isExtensionPausing && popupWindow && !popupWindow.closed) {
         setTimeout(() => {
           if (popupWindow && !popupWindow.closed && video.paused) {
-            if (video.__pipUrl && window.location.href !== video.__pipUrl) return;
-            const isAnotherVideoPlaying = Array.from(document.querySelectorAll("video"))
-              .some((v) => v !== video && !v.paused);
+            if (video.__pipUrl && window.location.href !== video.__pipUrl)
+              return;
+            const isAnotherVideoPlaying = Array.from(
+              document.querySelectorAll("video"),
+            ).some((v) => v !== video && !v.paused);
 
             if (!isAnotherVideoPlaying) {
               video.play().catch(() => {});
             }
           }
-        }, 100); 
+        }, 100);
       } else {
         updatePlayIcon();
       }
@@ -213,22 +243,23 @@
     const handleVolumeChange = updateMuteIcon;
     const handleTimeUpdate = () => {
       if (video.duration) {
-        progressBar.style.width = (video.currentTime / video.duration) * 100 + "%";
+        progressBar.style.width =
+          (video.currentTime / video.duration) * 100 + "%";
         timeDisplay.innerText = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
       }
     };
 
-    video.addEventListener('play', handlePlay);
-    video.addEventListener('pause', handlePause);
-    video.addEventListener('volumechange', handleVolumeChange);
-    video.addEventListener('timeupdate', handleTimeUpdate);
+    video.addEventListener("play", handlePlay);
+    video.addEventListener("pause", handlePause);
+    video.addEventListener("volumechange", handleVolumeChange);
+    video.addEventListener("timeupdate", handleTimeUpdate);
 
     // Store references for clean removal later
     video.__pipHandlers = {
       play: handlePlay,
       pause: handlePause,
       volumechange: handleVolumeChange,
-      timeupdate: handleTimeUpdate
+      timeupdate: handleTimeUpdate,
     };
 
     let clickTimer = null;
@@ -299,21 +330,49 @@
     };
 
     playBtn.onclick = togglePlay;
+
+    // --- MAIN WORLD SYNC BRIDGE (BVI COMPATIBILITY) ---
+
+    // Keep track of the last audible volume to restore smoothly when unmuting
+    let lastVolume = video.volume > 0 ? video.volume : 0.5;
+
+    // Unified helper: Decouples UI from the Video element to prevent proxy tug-of-wars
+    const applyVolumeChange = (newVol, isMuted) => {
+      // 1. Update the PiP UI instantly for a snappy feel (DO NOT set video.volume here)
+      volumeSlider.value = isMuted ? 0 : newVol;
+      muteBtn.innerHTML = (isMuted || newVol === 0) ? ICONS.volumeOff : ICONS.volumeOn;
+
+      // 2. Delegate the actual media update to the Main World iframe bridge
+      video.dataset.pipVolume = newVol;
+      video.dataset.pipMuted = isMuted;
+      video.dataset.pipSync = "true";
+      document.dispatchEvent(new CustomEvent('BVI_PiP_SyncVolume'));
+    };
+
     // --- FIX: Secure Audio & Mute Controls ---
     muteBtn.onclick = () => {
-      const isMuted = video.muted || video.volume === 0;
-      video.muted = !isMuted;
-      // If unmuting but volume is stuck at 0, default to 50%
-      if (!video.muted && video.volume === 0) {
-        video.volume = 0.5;
+      // Calculate current state based on UI, not the proxy-locked video element
+      const currentVol = parseFloat(volumeSlider.value);
+      const isCurrentlyMuted = currentVol === 0;
+      
+      if (isCurrentlyMuted) {
+        // Unmute and restore to the last known volume (or 50%)
+        applyVolumeChange(lastVolume > 0 ? lastVolume : 0.5, false);
+      } else {
+        // Mute, but save current volume first
+        lastVolume = currentVol;
+        applyVolumeChange(0, true);
       }
     };
+
     fsBtn.onclick = toggleFullscreen;
-    volumeSlider.addEventListener('input', (e) => {
-        const newVol = parseFloat(e.target.value); // Cast to Float for BVI compatibility
-        video.volume = newVol;
-        video.muted = newVol === 0;
-      });
+
+    volumeSlider.addEventListener("input", (e) => {
+      const newVol = parseFloat(e.target.value);
+      if (newVol > 0) lastVolume = newVol;
+      applyVolumeChange(newVol, newVol === 0);
+    });
+
     doc.onkeydown = (e) => {
       if (e.code === "Space" || e.code === "KeyK") {
         e.preventDefault();
@@ -325,7 +384,7 @@
       }
       if (e.code === "KeyM") {
         e.preventDefault();
-        video.muted = !video.muted;
+        muteBtn.onclick(); // Route through unified mute logic
       }
       if (e.code === "ArrowRight" || e.code === "KeyL") {
         e.preventDefault();
@@ -339,11 +398,15 @@
       }
       if (e.code === "ArrowUp") {
         e.preventDefault();
-        video.volume = Math.min(1, video.volume + 0.1);
+        const newVol = Math.min(1, video.volume + 0.1);
+        if (newVol > 0) lastVolume = newVol;
+        applyVolumeChange(newVol, newVol === 0); // Correctly toggles unmute
       }
       if (e.code === "ArrowDown") {
         e.preventDefault();
-        video.volume = Math.max(0, video.volume - 0.1);
+        const newVol = Math.max(0, video.volume - 0.1);
+        if (newVol > 0) lastVolume = newVol;
+        applyVolumeChange(newVol, newVol === 0);
       }
     };
   }
@@ -372,8 +435,6 @@
     // Hide video visually but keep it buffering in the main DOM
     newVideo.style.setProperty("opacity", "0.01", "important");
     newVideo.style.setProperty("pointer-events", "none", "important");
-    newVideo.muted = false;
-    newVideo.volume = 0.2;
 
     if (!popupWindow || popupWindow.closed) {
       popupWindow = window.open(
@@ -455,20 +516,19 @@
     // 🚨 BUG FIX: Track the URL this video started on for pause validation
     newVideo.__pipUrl = window.location.href;
 
-    newVideo.volume = 0.2;
-
-    // Set mute state BEFORE playing based on user interaction
+    // Set mute state BEFORE playing based on user interaction (Safe Sync)
     const canPlayAudio =
       popupWindow.navigator.userActivation &&
       popupWindow.navigator.userActivation.hasBeenActive;
-    newVideo.muted = !canPlayAudio;
+    
+    syncVolumeToMainWorld(newVideo, newVideo.volume, !canPlayAudio);
 
     const playPromise = newVideo.play();
     if (playPromise !== undefined) {
       playPromise.catch(() => {
         // If playback is blocked by policy, gracefully fallback to muted autoplay
         if (!newVideo.muted) {
-          newVideo.muted = true;
+          syncVolumeToMainWorld(newVideo, newVideo.volume, true);
           newVideo.play().catch(() => {});
         }
       });
@@ -519,7 +579,8 @@
           popupWindow.navigator.userActivation &&
           popupWindow.navigator.userActivation.hasBeenActive
         ) {
-          video.muted = false;
+          // Replace `video.muted = false;` with:
+          syncVolumeToMainWorld(video, video.volume, false);
         }
       } else if (popupWindow && !popupWindow.closed && currentVideo !== video) {
         setTimeout(() => {

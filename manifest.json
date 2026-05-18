@@ -23,6 +23,12 @@
       ]
     }
   ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js"],
+      "matches": ["*://*.instagram.com/*"]
+    }
+  ],
   "icons": {
     "128": "icon.png"
   }
