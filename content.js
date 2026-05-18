@@ -99,11 +99,14 @@
         currentVideo.play().catch(() => {});
       }
 
-      // Clean up ONLY our custom event listeners
-      delete currentVideo.onplay;
-      delete currentVideo.onpause;
-      delete currentVideo.onvolumechange;
-      delete currentVideo.ontimeupdate;
+      // Clean up ONLY our custom event listeners safely
+      if (currentVideo.__pipHandlers) {
+        currentVideo.removeEventListener('play', currentVideo.__pipHandlers.play);
+        currentVideo.removeEventListener('pause', currentVideo.__pipHandlers.pause);
+        currentVideo.removeEventListener('volumechange', currentVideo.__pipHandlers.volumechange);
+        currentVideo.removeEventListener('timeupdate', currentVideo.__pipHandlers.timeupdate);
+        delete currentVideo.__pipHandlers;
+      }
     }
 
     // Purge memory completely
@@ -189,37 +192,43 @@
     updateMuteIcon();
     fsBtn.innerHTML = ICONS.fullscreen;
 
-    video.onplay = updatePlayIcon;
-    video.onpause = () => {
+    const handlePlay = updatePlayIcon;
+    const handlePause = () => {
       if (!video.__isExtensionPausing && popupWindow && !popupWindow.closed) {
         setTimeout(() => {
           if (popupWindow && !popupWindow.closed && video.paused) {
-            // 🚨 BUG FIX: Abort force-play if the URL changed (BVI moved to next post)
-            if (video.__pipUrl && window.location.href !== video.__pipUrl)
-              return;
-
-            // 🚨 BUG FIX: Abort if BVI or IG has successfully started another video
-            const isAnotherVideoPlaying = Array.from(
-              document.querySelectorAll("video"),
-            ).some((v) => v !== video && !v.paused);
+            if (video.__pipUrl && window.location.href !== video.__pipUrl) return;
+            const isAnotherVideoPlaying = Array.from(document.querySelectorAll("video"))
+              .some((v) => v !== video && !v.paused);
 
             if (!isAnotherVideoPlaying) {
               video.play().catch(() => {});
             }
           }
-        }, 100); // 🚨 BUG FIX: Increased from 50ms to 100ms to allow BVI transition time
+        }, 100); 
       } else {
         updatePlayIcon();
       }
     };
-    video.onvolumechange = updateMuteIcon;
-
-    video.ontimeupdate = () => {
+    const handleVolumeChange = updateMuteIcon;
+    const handleTimeUpdate = () => {
       if (video.duration) {
-        progressBar.style.width =
-          (video.currentTime / video.duration) * 100 + "%";
+        progressBar.style.width = (video.currentTime / video.duration) * 100 + "%";
         timeDisplay.innerText = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
       }
+    };
+
+    video.addEventListener('play', handlePlay);
+    video.addEventListener('pause', handlePause);
+    video.addEventListener('volumechange', handleVolumeChange);
+    video.addEventListener('timeupdate', handleTimeUpdate);
+
+    // Store references for clean removal later
+    video.__pipHandlers = {
+      play: handlePlay,
+      pause: handlePause,
+      volumechange: handleVolumeChange,
+      timeupdate: handleTimeUpdate
     };
 
     let clickTimer = null;
@@ -290,14 +299,21 @@
     };
 
     playBtn.onclick = togglePlay;
+    // --- FIX: Secure Audio & Mute Controls ---
     muteBtn.onclick = () => {
-      video.muted = !video.muted;
+      const isMuted = video.muted || video.volume === 0;
+      video.muted = !isMuted;
+      // If unmuting but volume is stuck at 0, default to 50%
+      if (!video.muted && video.volume === 0) {
+        video.volume = 0.5;
+      }
     };
     fsBtn.onclick = toggleFullscreen;
-    volumeSlider.oninput = (e) => {
-      video.volume = e.target.value;
-      video.muted = video.volume === 0;
-    };
+    volumeSlider.addEventListener('input', (e) => {
+        const newVol = parseFloat(e.target.value); // Cast to Float for BVI compatibility
+        video.volume = newVol;
+        video.muted = newVol === 0;
+      });
     doc.onkeydown = (e) => {
       if (e.code === "Space" || e.code === "KeyK") {
         e.preventDefault();
@@ -462,18 +478,18 @@
 
     clearInterval(pipMonitorInterval);
     pipMonitorInterval = setInterval(() => {
-        if (popupWindow && !popupWindow.closed) { 
-            const urlChanged = window.location.href !== activePopupUrl;
+      if (popupWindow && !popupWindow.closed) {
+        const urlChanged = window.location.href !== activePopupUrl;
 
-            if (urlChanged) {
-                activePopupUrl = window.location.href; // Update URL
-                
-                // 🚨 BUG FIX: Pass 'true' to pause the old video because the user moved to a new post
-                restoreVideo(true); 
-            }
-        } else {
-            clearInterval(pipMonitorInterval);
+        if (urlChanged) {
+          activePopupUrl = window.location.href; // Update URL
+
+          // 🚨 BUG FIX: Pass 'true' to pause the old video because the user moved to a new post
+          restoreVideo(true);
         }
+      } else {
+        clearInterval(pipMonitorInterval);
+      }
     }, 500);
   }
 
