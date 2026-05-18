@@ -61,70 +61,48 @@
         clearInterval(pipMonitorInterval); // Stop the DOM monitor
 
         if (currentVideo && originalParent && placeholder) {
-            // 1. Halt the decoder before the child window dies
-            currentVideo.pause();
+            // Simply remove the visual overlay
+            if (originalParent.contains(placeholder)) {
+                originalParent.removeChild(placeholder);
+            }
 
-            // 2. Explicitly transfer GPU and DOM ownership back to the main window
-            try { document.adoptNode(currentVideo); } catch (e) { }
-
-            // 3. Restore layout natively
+            // Restore original styles natively
             currentVideo.style.cssText = originalStyle || "";
-            currentVideo.controls = false;
-            currentVideo.muted = true;
+            currentVideo.controls = originalControls;
 
-            // Clean up ONLY our custom event listeners to avoid extension conflicts
-            currentVideo.onclick = null;
-            currentVideo.ondblclick = null;
+            // Clean up ONLY our custom event listeners
             delete currentVideo.onplay;
             delete currentVideo.onpause;
             delete currentVideo.onvolumechange;
             delete currentVideo.ontimeupdate;
-
-            // 4. Check if the original post still exists on the page
-            const isParentAlive = document.body.contains(placeholder) || document.body.contains(originalParent);
-
-            if (isParentAlive) {
-                if (document.body.contains(placeholder)) {
-                    placeholder.parentNode.replaceChild(currentVideo, placeholder);
-                } else {
-                    originalParent.insertBefore(currentVideo, originalSibling);
-                }
-
-                // 🚨 BUG 1 FIX: Prevent Black Screen Context Loss
-                const targetVideo = currentVideo;
-                const savedTime = targetVideo.currentTime;
-
-                // Force browser to re-initialize the media engine for this element
-                targetVideo.load();
-                targetVideo.currentTime = savedTime;
-
-                // Guarantees Chromium repaints the GPU texture before playback
-                window.requestAnimationFrame(() => {
-                    window.requestAnimationFrame(() => {
-                        if (targetVideo.readyState >= 2) {
-                            targetVideo.currentTime += 0.001;
-                        }
-                        targetVideo.play().catch(() => { });
-                    });
-                });
-            } else {
-                // The user navigated away and the container is completely gone.
-                currentVideo.pause();
-                currentVideo.removeAttribute('src');
-                currentVideo.load();
-            }
         }
 
-        // 5. Purge memory completely
+        // Purge memory completely
         currentVideo = originalParent = originalSibling = placeholder = null;
         originalStyle = "";
     }
 
     function setupCustomPlayer(video, doc) {
-        // [NO CHANGES HERE: Your custom player logic remains exactly the same]
         const container = doc.getElementById('video-container');
         container.innerHTML = '';
-        container.appendChild(video);
+        
+        // --- CANVAS PROXY FIX ---
+        const canvas = doc.createElement('canvas');
+        canvas.style.cssText = "width:100%;height:100%;object-fit:contain;background:#000;";
+        container.appendChild(canvas);
+        const ctx = canvas.getContext('2d');
+        
+        function renderLoop() {
+            if (!popupWindow || popupWindow.closed) return;
+            if (video.readyState >= 2) {
+                if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth || 300;
+                if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight || 150;
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            }
+            requestAnimationFrame(renderLoop);
+        }
+        renderLoop();
+        
         video.controls = false;
 
         const playBtn = doc.getElementById('play-btn'); const muteBtn = doc.getElementById('mute-btn'); const fsBtn = doc.getElementById('fs-btn'); const progressBar = doc.getElementById('progress-bar'); const progressArea = doc.getElementById('progress-area'); const hoverTime = doc.getElementById('hover-time'); const hoverBar = doc.getElementById('hover-bar'); const centerIcon = doc.getElementById('center-icon'); const volumeSlider = doc.getElementById('volume-slider'); const timeDisplay = doc.getElementById('time-display');
@@ -146,8 +124,8 @@
         video.ontimeupdate = () => { if (video.duration) { progressBar.style.width = (video.currentTime / video.duration) * 100 + '%'; timeDisplay.innerText = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`; } };
 
         let clickTimer = null;
-        video.onclick = () => { if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; } else { clickTimer = setTimeout(() => { togglePlay(); clickTimer = null; }, 250); } };
-        video.ondblclick = (e) => { e.preventDefault(); if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; } toggleFullscreen(); };
+        canvas.onclick = () => { if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; } else { clickTimer = setTimeout(() => { togglePlay(); clickTimer = null; }, 250); } };
+        canvas.ondblclick = (e) => { e.preventDefault(); if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; } toggleFullscreen(); };
 
         let isDragging = false; let wasPlaying = false;
         const updateTimeFromMouse = (e) => { const rect = progressArea.getBoundingClientRect(); let pos = (e.clientX - rect.left) / rect.width; pos = Math.max(0, Math.min(1, pos)); video.currentTime = pos * video.duration; progressBar.style.width = (pos * 100) + '%'; timeDisplay.innerText = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`; };
@@ -165,17 +143,23 @@
         if (!newVideo || newVideo === currentVideo) return;
         if (popupWindow && !popupWindow.closed) restoreVideo();
 
-        currentVideo = newVideo;
         originalParent = newVideo.parentElement;
         originalSibling = newVideo.nextSibling;
         originalStyle = newVideo.style.cssText;
         originalControls = newVideo.controls;
+        
+        // --- OVERLAY FIX: Do not move the video in DOM to prevent MSE/BVI crashes ---
+        originalParent.style.position = 'relative';
         placeholder = document.createElement("div");
-        placeholder.style.cssText = "width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center;color:#888;font-size:14px;";
+        placeholder.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center;color:#888;font-size:14px;z-index:10;";
         placeholder.innerText = "Playing in PiP ";
-        originalParent.insertBefore(placeholder, newVideo);
+        originalParent.appendChild(placeholder);
 
-        newVideo.style.cssText = "width:100%;height:100%;object-fit:contain;background:#000;"; newVideo.muted = false; newVideo.volume = 0.2;
+        // Hide video visually but keep it buffering in the main DOM
+        newVideo.style.setProperty('opacity', '0.01', 'important');
+        newVideo.style.setProperty('pointer-events', 'none', 'important');
+        newVideo.muted = false; 
+        newVideo.volume = 0.2;
 
         if (!popupWindow || popupWindow.closed) {
             popupWindow = window.open("", "IG_Popup_Video", "popup=yes,width=450,height=800,menubar=no,toolbar=no,location=no,status=no,titlebar=no");
@@ -234,27 +218,40 @@
         const savedTime = newVideo.currentTime;
         setupCustomPlayer(newVideo, popupWindow.document);
         newVideo.style.display = 'none'; void newVideo.offsetHeight; newVideo.style.display = 'block';
-        newVideo.__isExtensionPausing = false; newVideo.muted = true;
-        newVideo.play().then(() => {
-            if (popupWindow.navigator.userActivation && popupWindow.navigator.userActivation.hasBeenActive) {
-                newVideo.muted = false;
-            } else {
-                newVideo.muted = true;
-            }
-            newVideo.volume = 0.2;
-        }).catch(() => { });
+        newVideo.__isExtensionPausing = false;
+        newVideo.volume = 0.2;
+        
+        // Set mute state BEFORE playing based on user interaction
+        const canPlayAudio = popupWindow.navigator.userActivation && popupWindow.navigator.userActivation.hasBeenActive;
+        newVideo.muted = !canPlayAudio;
 
-        const activePopupUrl = window.location.href;
+        const playPromise = newVideo.play();
+        if (playPromise !== undefined) {
+            playPromise.catch(() => {
+                // If playback is blocked by policy, gracefully fallback to muted autoplay
+                if (!newVideo.muted) {
+                    newVideo.muted = true;
+                    newVideo.play().catch(() => {});
+                }
+            });
+        }
+
+        let activePopupUrl = window.location.href;
 
         clearInterval(pipMonitorInterval);
         pipMonitorInterval = setInterval(() => {
-            if (popupWindow && !popupWindow.closed && placeholder) { 
-                // Check if user navigated to another post (URL changed) OR placeholder was destroyed
+            if (popupWindow && !popupWindow.closed) { 
+                // 🚨 BUG FIX: Ignore 'placeholderRemoved' to prevent React re-render looping.
                 const urlChanged = window.location.href !== activePopupUrl;
-                const placeholderRemoved = !document.body.contains(placeholder);
 
-                if (urlChanged || placeholderRemoved) {
-                    popupWindow.close(); // Triggers restoreVideo automatically
+                if (urlChanged) {
+                    activePopupUrl = window.location.href; // Update URL
+                    restoreVideo(); // Clean up old video
+                    
+                    // Note: We DO NOT manually poll for the next video here anymore.
+                    // By leaving the popup window open, the standard 'playing' listener 
+                    // in initVideo() will automatically catch the next video once 
+                    // Instagram and BVI have fully initialized it. This prevents race conditions.
                 }
             } else {
                 clearInterval(pipMonitorInterval);
@@ -280,7 +277,10 @@
 
         video.addEventListener('playing', () => {
             if (popupWindow && currentVideo === video && !popupWindow.closed) {
-                video.muted = false;
+                // BUG FIX: Only force unmute if the popup window actually has user activation
+                if (popupWindow.navigator.userActivation && popupWindow.navigator.userActivation.hasBeenActive) {
+                    video.muted = false;
+                }
             } else if (popupWindow && !popupWindow.closed && currentVideo !== video) {
                 setTimeout(() => {
                     const r = video.getBoundingClientRect();
