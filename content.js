@@ -26,9 +26,11 @@
   // --- MAIN WORLD SYNC BRIDGE (BVI COMPATIBILITY) ---
   if (!window.__pipAudioInjected) {
     window.__pipAudioInjected = true;
-    const script = document.createElement('script');
-    script.src = chrome.runtime.getURL('inject.js');
-    script.onload = function() { this.remove(); };
+    const script = document.createElement("script");
+    script.src = chrome.runtime.getURL("inject.js");
+    script.onload = function () {
+      this.remove();
+    };
     (document.head || document.documentElement).appendChild(script);
   }
 
@@ -36,7 +38,30 @@
     vid.dataset.pipVolume = newVol;
     vid.dataset.pipMuted = isMuted;
     vid.dataset.pipSync = "true";
-    document.dispatchEvent(new CustomEvent('BVI_PiP_SyncVolume'));
+    document.dispatchEvent(new CustomEvent("BVI_PiP_SyncVolume"));
+  };
+
+  // --- BVI PROXY GETTER BYPASS ---
+  const getNativeVolume = (vid) => {
+    try {
+      return Object.getOwnPropertyDescriptor(
+        HTMLMediaElement.prototype,
+        "volume",
+      ).get.call(vid);
+    } catch (e) {
+      return vid.volume;
+    }
+  };
+
+  const getNativeMuted = (vid) => {
+    try {
+      return Object.getOwnPropertyDescriptor(
+        HTMLMediaElement.prototype,
+        "muted",
+      ).get.call(vid);
+    } catch (e) {
+      return vid.muted;
+    }
   };
 
   // --- 1. GLOBAL UI SYSTEM ---
@@ -210,10 +235,13 @@
     };
     const updatePlayIcon = () =>
       (playBtn.innerHTML = video.paused ? ICONS.play : ICONS.pause);
+    // Replace the existing updateMuteIcon
     const updateMuteIcon = () => {
+      const vol = getNativeVolume(video);
+      const muted = getNativeMuted(video);
       muteBtn.innerHTML =
-        video.muted || video.volume === 0 ? ICONS.volumeOff : ICONS.volumeOn;
-      volumeSlider.value = video.muted ? 0 : video.volume;
+        muted || vol === 0 ? ICONS.volumeOff : ICONS.volumeOn;
+      volumeSlider.value = muted ? 0 : vol;
     };
 
     updatePlayIcon();
@@ -333,20 +361,21 @@
 
     // --- MAIN WORLD SYNC BRIDGE (BVI COMPATIBILITY) ---
 
-    // Keep track of the last audible volume to restore smoothly when unmuting
-    let lastVolume = video.volume > 0 ? video.volume : 0.5;
+    // Replace the existing lastVolume initialization (around line 208)
+    let lastVolume = getNativeVolume(video) > 0 ? getNativeVolume(video) : 0.5;
 
     // Unified helper: Decouples UI from the Video element to prevent proxy tug-of-wars
     const applyVolumeChange = (newVol, isMuted) => {
       // 1. Update the PiP UI instantly for a snappy feel (DO NOT set video.volume here)
       volumeSlider.value = isMuted ? 0 : newVol;
-      muteBtn.innerHTML = (isMuted || newVol === 0) ? ICONS.volumeOff : ICONS.volumeOn;
+      muteBtn.innerHTML =
+        isMuted || newVol === 0 ? ICONS.volumeOff : ICONS.volumeOn;
 
       // 2. Delegate the actual media update to the Main World iframe bridge
       video.dataset.pipVolume = newVol;
       video.dataset.pipMuted = isMuted;
       video.dataset.pipSync = "true";
-      document.dispatchEvent(new CustomEvent('BVI_PiP_SyncVolume'));
+      document.dispatchEvent(new CustomEvent("BVI_PiP_SyncVolume"));
     };
 
     // --- FIX: Secure Audio & Mute Controls ---
@@ -354,7 +383,7 @@
       // Calculate current state based on UI, not the proxy-locked video element
       const currentVol = parseFloat(volumeSlider.value);
       const isCurrentlyMuted = currentVol === 0;
-      
+
       if (isCurrentlyMuted) {
         // Unmute and restore to the last known volume (or 50%)
         applyVolumeChange(lastVolume > 0 ? lastVolume : 0.5, false);
@@ -398,13 +427,13 @@
       }
       if (e.code === "ArrowUp") {
         e.preventDefault();
-        const newVol = Math.min(1, video.volume + 0.1);
+        const newVol = Math.min(1, getNativeVolume(video) + 0.1);
         if (newVol > 0) lastVolume = newVol;
-        applyVolumeChange(newVol, newVol === 0); // Correctly toggles unmute
+        applyVolumeChange(newVol, newVol === 0);
       }
       if (e.code === "ArrowDown") {
         e.preventDefault();
-        const newVol = Math.max(0, video.volume - 0.1);
+        const newVol = Math.max(0, getNativeVolume(video) - 0.1);
         if (newVol > 0) lastVolume = newVol;
         applyVolumeChange(newVol, newVol === 0);
       }
@@ -516,19 +545,19 @@
     // 🚨 BUG FIX: Track the URL this video started on for pause validation
     newVideo.__pipUrl = window.location.href;
 
-    // Set mute state BEFORE playing based on user interaction (Safe Sync)
+    // Update the sync volume call right before the playPromise
     const canPlayAudio =
       popupWindow.navigator.userActivation &&
       popupWindow.navigator.userActivation.hasBeenActive;
     
-    syncVolumeToMainWorld(newVideo, newVideo.volume, !canPlayAudio);
+    syncVolumeToMainWorld(newVideo, getNativeVolume(newVideo), !canPlayAudio);
 
     const playPromise = newVideo.play();
     if (playPromise !== undefined) {
       playPromise.catch(() => {
-        // If playback is blocked by policy, gracefully fallback to muted autoplay
-        if (!newVideo.muted) {
-          syncVolumeToMainWorld(newVideo, newVideo.volume, true);
+        // Use getNativeMuted() and getNativeVolume()
+        if (!getNativeMuted(newVideo)) {
+          syncVolumeToMainWorld(newVideo, getNativeVolume(newVideo), true);
           newVideo.play().catch(() => {});
         }
       });
@@ -574,13 +603,12 @@
 
     video.addEventListener("playing", () => {
       if (popupWindow && currentVideo === video && !popupWindow.closed) {
-        // BUG FIX: Only force unmute if the popup window actually has user activation
         if (
           popupWindow.navigator.userActivation &&
           popupWindow.navigator.userActivation.hasBeenActive
         ) {
-          // Replace `video.muted = false;` with:
-          syncVolumeToMainWorld(video, video.volume, false);
+          // Use getNativeVolume() instead of video.volume
+          syncVolumeToMainWorld(video, getNativeVolume(video), false);
         }
       } else if (popupWindow && !popupWindow.closed && currentVideo !== video) {
         setTimeout(() => {
